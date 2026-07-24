@@ -1,0 +1,20 @@
+# Copy this file to db.properties and fill in your local values.
+# db.properties is intentionally git-ignored so credentials never enter version control.
+
+# --- JDBC (MySQL) ---
+jdbc.url=jdbc:mysql://localhost:3306/smart_home_energy?serverTimezone=UTC
+jdbc.user=energy_app
+jdbc.password=change_me
+jdbc.driver=com.mysql.cj.jdbc.Driver
+
+# --- Server ports ---
+# Port the smart-meter simulators connect to (raw reading ingest).
+server.meter.port=5060
+# Port the Swing dashboard subscribes to for the live reading feed.
+server.dashboard.port=5061
+
+# --- Simulator ---
+# Milliseconds between readings emitted by each simulated meter.
+simulator.interval.ms=1000
+# Probability [0,1] that a given reading is an injected anomaly (for demos).
+simulator.anomaly.probability=0.02

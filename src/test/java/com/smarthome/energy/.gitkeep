@@ -1,0 +1,2 @@
+# Maven test source root. Unit tests (e.g. for WireFormatValidator's DFA and the DAOs)
+# live here. Kept in version control so the standard Maven layout is present from the start.
