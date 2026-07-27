@@ -14,7 +14,7 @@ import java.util.Optional;
  *
  * <p>Syllabus mapping: Unit I — Java OOP fundamentals (strategy pattern).</p>
  *
- * @author Jiya Nambiar (meter simulators & rule engine)
+ * @author Jiya Nambiar (jiyanambiar)
  */
 public final class VoltageSagRule implements DetectionRule {
 

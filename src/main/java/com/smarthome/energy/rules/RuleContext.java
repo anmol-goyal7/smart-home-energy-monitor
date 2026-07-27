@@ -17,7 +17,7 @@ package com.smarthome.energy.rules;
  *
  * <p>Syllabus mapping: Unit I — Java OOP fundamentals.</p>
  *
- * @author Jiya Nambiar (meter simulators & rule engine)
+ * @author Jiya Nambiar (jiyanambiar)
  */
 public final class RuleContext {
     // Placeholder — threshold/device lookup implemented by the author.

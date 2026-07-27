@@ -16,7 +16,7 @@ package com.smarthome.energy.rules;
  *
  * <p>Syllabus mapping: Unit I — Java OOP fundamentals (composition, strategy pattern).</p>
  *
- * @author Jiya Nambiar (meter simulators & rule engine)
+ * @author Jiya Nambiar (jiyanambiar)
  */
 public final class RuleEngine {
     // Placeholder — rule registration and evaluate/persist loop implemented by the author.

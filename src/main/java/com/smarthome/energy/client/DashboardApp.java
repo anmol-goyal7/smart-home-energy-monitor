@@ -11,7 +11,7 @@ package com.smarthome.energy.client;
  * <p>Syllabus mapping: Unit II — GUI programming with Swing/AWT (application bootstrap,
  * EDT usage).</p>
  *
- * @author Bhumika Rajput (Swing MVC client)
+ * @author Bhumika Rajput (BhumikaRajput28)
  */
 public final class DashboardApp {
     // Placeholder — main() and MVC wiring implemented by the author.

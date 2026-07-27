@@ -10,7 +10,7 @@ package com.smarthome.energy.simulator;
  *
  * <p>Syllabus mapping: Unit I — Java OOP fundamentals.</p>
  *
- * @author Jiya Nambiar (meter simulators & rule engine)
+ * @author Jiya Nambiar (jiyanambiar)
  */
 public final class WaveformGenerator {
     // Placeholder — sampling and anomaly injection implemented by the author.

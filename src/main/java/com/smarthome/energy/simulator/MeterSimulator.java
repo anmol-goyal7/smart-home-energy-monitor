@@ -15,7 +15,7 @@ package com.smarthome.energy.simulator;
  *
  * <p>Syllabus mapping: Unit I — Java OOP fundamentals, TCP client sockets, threading.</p>
  *
- * @author Jiya Nambiar (meter simulators & rule engine)
+ * @author Jiya Nambiar (jiyanambiar)
  */
 public final class MeterSimulator implements Runnable {
 

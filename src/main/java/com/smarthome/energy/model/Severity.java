@@ -9,7 +9,7 @@ package com.smarthome.energy.model;
  *
  * <p>Syllabus mapping: Unit I — Java OOP fundamentals (enums).</p>
  *
- * @author Jiya Nambiar (meter simulators & rule engine)
+ * @author Jiya Nambiar (jiyanambiar)
  */
 public enum Severity {
 

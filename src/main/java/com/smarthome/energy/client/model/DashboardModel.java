@@ -10,7 +10,7 @@ package com.smarthome.energy.client.model;
  *
  * <p>Syllabus mapping: Unit II — GUI programming with Swing/AWT (MVC, observer pattern).</p>
  *
- * @author Bhumika Rajput (Swing MVC client)
+ * @author Bhumika Rajput (BhumikaRajput28)
  */
 public final class DashboardModel {
     // Placeholder — state stores and listener notification implemented by the author.

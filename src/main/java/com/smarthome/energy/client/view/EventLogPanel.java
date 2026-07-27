@@ -9,7 +9,7 @@ package com.smarthome.energy.client.view;
  *
  * <p>Syllabus mapping: Unit II — GUI programming with Swing/AWT ({@code JTable}, rendering).</p>
  *
- * @author Bhumika Rajput (Swing MVC client)
+ * @author Bhumika Rajput (BhumikaRajput28)
  */
 public final class EventLogPanel {
     // Placeholder — table model and rendering implemented by the author.
