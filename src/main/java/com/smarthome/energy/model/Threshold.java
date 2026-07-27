@@ -19,7 +19,7 @@ package com.smarthome.energy.model;
  *
  * <p>Syllabus mapping: Unit I — Java OOP fundamentals; Unit III — JDBC entity.</p>
  *
- * @author Team member 3 (meter simulators & rule engine)
+ * @author Jiya Nambiar (meter simulators & rule engine)
  */
 public final class Threshold {
     // Placeholder — fields, constructor, and accessors implemented by the author.

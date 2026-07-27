@@ -10,7 +10,7 @@ package com.smarthome.energy.simulator;
  *
  * <p>Syllabus mapping: Unit I — Java OOP fundamentals.</p>
  *
- * @author Team member 3 (meter simulators & rule engine)
+ * @author Jiya Nambiar (meter simulators & rule engine)
  */
 public final class ApplianceProfile {
     // Placeholder — profile fields and accessors implemented by the author.

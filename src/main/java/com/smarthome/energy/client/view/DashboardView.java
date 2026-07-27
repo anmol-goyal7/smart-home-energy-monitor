@@ -11,7 +11,7 @@ package com.smarthome.energy.client.view;
  *
  * <p>Syllabus mapping: Unit II — GUI programming with Swing/AWT (containers, layout, EDT).</p>
  *
- * @author Team member 2 (Swing MVC client)
+ * @author Bhumika Rajput (Swing MVC client)
  */
 public final class DashboardView {
     // Placeholder — frame construction, layout, and model-change rendering implemented by the author.

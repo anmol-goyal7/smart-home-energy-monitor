@@ -12,7 +12,7 @@ package com.smarthome.energy.client;
  * <p>Syllabus mapping: Unit II — GUI programming (background networking off the EDT);
  * Unit I — TCP client sockets.</p>
  *
- * @author Team member 2 (Swing MVC client)
+ * @author Bhumika Rajput (Swing MVC client)
  */
 public final class LiveFeedClient {
     // Placeholder — subscribe handshake and read loop implemented by the author.

@@ -860,8 +860,8 @@ syllabus units — and so that each member can defend every line in their own pa
 | Member | GitHub | Owns | Packages / files |
 | ------ | ------ | ---- | ---------------- |
 | Anmol Goyal | `anmol-goyal7` | Socket server, threading model and benchmark, JDBC layer, schema | `server`, `db`, `protocol`, `bench`, `sql/` |
-| Team member 2 | — | Swing MVC client, threshold editor, EDT demonstration | `client` (and its `model`/`view`/`controller`) |
-| Team member 3 | — | Meter simulators, scenario playback, rule engine, Python analytics, report | `simulator`, `rules`, `python/`, `docs/` |
+| Bhumika Rajput | — | Swing MVC client, threshold editor, EDT demonstration | `client` (and its `model`/`view`/`controller`) |
+| Jiya Nambiar | — | Meter simulators, scenario playback, rule engine, Python analytics, report | `simulator`, `rules`, `python/`, `docs/` |
 
 ---
 

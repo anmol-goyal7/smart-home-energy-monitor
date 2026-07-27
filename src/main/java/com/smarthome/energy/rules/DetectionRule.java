@@ -15,7 +15,7 @@ import java.util.Optional;
  *
  * <p>Syllabus mapping: Unit I — Java OOP fundamentals (strategy pattern, interfaces).</p>
  *
- * @author Team member 3 (meter simulators & rule engine)
+ * @author Jiya Nambiar (meter simulators & rule engine)
  */
 public interface DetectionRule {
 

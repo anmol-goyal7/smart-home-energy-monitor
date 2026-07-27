@@ -10,7 +10,7 @@ package com.smarthome.energy.client;
  *
  * <p>Syllabus mapping: Unit III — Database connectivity via JDBC (read queries from the UI).</p>
  *
- * @author Team member 2 (Swing MVC client)
+ * @author Bhumika Rajput (Swing MVC client)
  */
 public final class HistoryQueryService {
     // Placeholder — history/alert queries implemented by the author.

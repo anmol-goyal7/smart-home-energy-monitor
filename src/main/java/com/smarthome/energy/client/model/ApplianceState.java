@@ -9,7 +9,7 @@ package com.smarthome.energy.client.model;
  *
  * <p>Syllabus mapping: Unit II — GUI programming with Swing/AWT (MVC model element).</p>
  *
- * @author Team member 2 (Swing MVC client)
+ * @author Bhumika Rajput (Swing MVC client)
  */
 public final class ApplianceState {
     // Placeholder — per-appliance state fields implemented by the author.

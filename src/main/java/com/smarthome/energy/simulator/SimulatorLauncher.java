@@ -9,7 +9,7 @@ package com.smarthome.energy.simulator;
  *
  * <p>Syllabus mapping: Unit I — Java OOP fundamentals, threading.</p>
  *
- * @author Team member 3 (meter simulators & rule engine)
+ * @author Jiya Nambiar (meter simulators & rule engine)
  */
 public final class SimulatorLauncher {
     // Placeholder — main() and fleet start-up implemented by the author.

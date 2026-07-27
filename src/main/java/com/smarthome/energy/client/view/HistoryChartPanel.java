@@ -10,7 +10,7 @@ package com.smarthome.energy.client.view;
  * <p>Syllabus mapping: Unit II — GUI programming with Swing/AWT (custom painting);
  * Unit III — consumes JDBC query results.</p>
  *
- * @author Team member 2 (Swing MVC client)
+ * @author Bhumika Rajput (Swing MVC client)
  */
 public final class HistoryChartPanel {
     // Placeholder — chart rendering implemented by the author.

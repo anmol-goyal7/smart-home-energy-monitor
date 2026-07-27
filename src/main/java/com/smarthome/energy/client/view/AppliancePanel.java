@@ -10,7 +10,7 @@ package com.smarthome.energy.client.view;
  * <p>Syllabus mapping: Unit II — GUI programming with Swing/AWT (custom {@code JPanel},
  * painting).</p>
  *
- * @author Team member 2 (Swing MVC client)
+ * @author Bhumika Rajput (Swing MVC client)
  */
 public final class AppliancePanel {
     // Placeholder — component layout and paint logic implemented by the author.

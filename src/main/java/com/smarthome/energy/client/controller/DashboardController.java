@@ -12,7 +12,7 @@ package com.smarthome.energy.client.controller;
  * <p>Syllabus mapping: Unit II — GUI programming with Swing/AWT (MVC controller, event
  * handling, EDT marshalling).</p>
  *
- * @author Team member 2 (Swing MVC client)
+ * @author Bhumika Rajput (Swing MVC client)
  */
 public final class DashboardController {
     // Placeholder — feed handling, user-action handling, and model updates implemented by the author.
