@@ -1,5 +1,8 @@
 package com.smarthome.energy.model;
 
+import java.time.Instant;
+import java.util.Objects;
+
 /**
  * Value object representing a power-quality event raised by the rule engine.
  *
@@ -7,7 +10,7 @@ package com.smarthome.energy.model;
  * {@link Threshold} — a voltage spike, a voltage sag, or a load overload. Events are
  * persisted to the {@code events} table and surfaced on the dashboard's alert log.</p>
  *
- * <p>Intended fields:
+ * <p>Fields:
  * <ul>
  *   <li>{@code deviceId} — the device that produced the offending reading.</li>
  *   <li>{@code triggeringReadingId} — the reading that tripped the rule (nullable).</li>
@@ -15,13 +18,148 @@ package com.smarthome.energy.model;
  *   <li>{@code severity} — see {@link Severity}.</li>
  *   <li>{@code measuredValue} — the value observed.</li>
  *   <li>{@code thresholdValue} — the limit that was crossed.</li>
+ *   <li>{@code detail} — optional human-readable description.</li>
  *   <li>{@code detectedAt} — server-side detection timestamp.</li>
  * </ul>
+ *
+ * <p>{@code triggeringReadingId} is a boxed {@code Long} because the column is nullable:
+ * the foreign key is declared {@code ON DELETE SET NULL}, so an event outlives the reading
+ * it came from once history is pruned, and it stays useful — the measured value and the
+ * limit are recorded on the event itself rather than being reached through the reading.</p>
  *
  * <p>Syllabus mapping: Unit I — Java OOP fundamentals.</p>
  *
  * @author Jiya Nambiar (jiyanambiar)
  */
 public final class Event {
-    // Placeholder — fields, constructor, and accessors implemented by the author.
+
+    private final int deviceId;
+    private final Long triggeringReadingId;
+    private final EventType type;
+    private final Severity severity;
+    private final double measuredValue;
+    private final double thresholdValue;
+    private final String detail;
+    private final Instant detectedAt;
+
+    /**
+     * Creates an event.
+     *
+     * @param deviceId            the device that produced the offending reading; must be positive
+     * @param triggeringReadingId the reading that tripped the rule, or {@code null} if unknown
+     * @param type                what was detected; must not be null
+     * @param severity            how far past the limit; must not be null
+     * @param measuredValue       the value observed
+     * @param thresholdValue      the limit that was crossed
+     * @param detail              optional human-readable description; may be null
+     * @param detectedAt          server-side detection time; must not be null
+     * @throws IllegalArgumentException if {@code deviceId} is not positive
+     * @throws NullPointerException     if {@code type}, {@code severity}, or {@code detectedAt} is null
+     */
+    public Event(int deviceId, Long triggeringReadingId, EventType type, Severity severity,
+                 double measuredValue, double thresholdValue, String detail, Instant detectedAt) {
+        if (deviceId <= 0) {
+            throw new IllegalArgumentException("deviceId must be positive, was " + deviceId);
+        }
+        this.deviceId = deviceId;
+        this.triggeringReadingId = triggeringReadingId;
+        this.type = Objects.requireNonNull(type, "type");
+        this.severity = Objects.requireNonNull(severity, "severity");
+        this.measuredValue = measuredValue;
+        this.thresholdValue = thresholdValue;
+        this.detail = detail;
+        this.detectedAt = Objects.requireNonNull(detectedAt, "detectedAt");
+    }
+
+    /**
+     * Creates an event detected now, for a {@code DetectionRule} raising an alert on the
+     * reading it is currently evaluating.
+     *
+     * @param deviceId            the device that produced the offending reading
+     * @param triggeringReadingId the reading that tripped the rule, or {@code null} if unknown
+     * @param type                what was detected
+     * @param severity            how far past the limit
+     * @param measuredValue       the value observed
+     * @param thresholdValue      the limit that was crossed
+     * @param detail              optional human-readable description; may be null
+     * @return the event, stamped with the current instant
+     */
+    public static Event raisedNow(int deviceId, Long triggeringReadingId, EventType type, Severity severity,
+                                  double measuredValue, double thresholdValue, String detail) {
+        return new Event(deviceId, triggeringReadingId, type, severity,
+                measuredValue, thresholdValue, detail, Instant.now());
+    }
+
+    /** @return the device that produced the offending reading. */
+    public int getDeviceId() {
+        return deviceId;
+    }
+
+    /** @return the reading that tripped the rule, or {@code null} if unknown or pruned. */
+    public Long getTriggeringReadingId() {
+        return triggeringReadingId;
+    }
+
+    /** @return what was detected. */
+    public EventType getType() {
+        return type;
+    }
+
+    /** @return how far past the limit the reading was. */
+    public Severity getSeverity() {
+        return severity;
+    }
+
+    /** @return the value observed. */
+    public double getMeasuredValue() {
+        return measuredValue;
+    }
+
+    /** @return the limit that was crossed. */
+    public double getThresholdValue() {
+        return thresholdValue;
+    }
+
+    /** @return the optional human-readable description, or {@code null}. */
+    public String getDetail() {
+        return detail;
+    }
+
+    /** @return the server-side detection time. */
+    public Instant getDetectedAt() {
+        return detectedAt;
+    }
+
+    @Override
+    public boolean equals(Object o) {
+        if (this == o) {
+            return true;
+        }
+        if (!(o instanceof Event other)) {
+            return false;
+        }
+        return deviceId == other.deviceId
+                && Double.compare(measuredValue, other.measuredValue) == 0
+                && Double.compare(thresholdValue, other.thresholdValue) == 0
+                && Objects.equals(triggeringReadingId, other.triggeringReadingId)
+                && type == other.type
+                && severity == other.severity
+                && Objects.equals(detail, other.detail)
+                && detectedAt.equals(other.detectedAt);
+    }
+
+    @Override
+    public int hashCode() {
+        return Objects.hash(deviceId, triggeringReadingId, type, severity,
+                measuredValue, thresholdValue, detail, detectedAt);
+    }
+
+    @Override
+    public String toString() {
+        return "Event[" + severity + " " + type
+                + ", device=" + deviceId
+                + ", measured=" + measuredValue
+                + ", limit=" + thresholdValue
+                + ", at=" + detectedAt + "]";
+    }
 }

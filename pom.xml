@@ -22,11 +22,13 @@
 
         <!-- Dependency versions -->
         <mysql.connector.version>9.1.0</mysql.connector.version>
+        <junit.version>5.11.4</junit.version>
 
         <!-- Convenience: main classes for the exec plugin (override on the command line). -->
         <server.mainClass>com.smarthome.energy.server.EnergyMonitorServer</server.mainClass>
         <simulator.mainClass>com.smarthome.energy.simulator.SimulatorLauncher</simulator.mainClass>
         <dashboard.mainClass>com.smarthome.energy.client.DashboardApp</dashboard.mainClass>
+        <persistence.mainClass>com.smarthome.energy.db.PersistenceDemo</persistence.mainClass>
     </properties>
 
     <dependencies>
@@ -35,6 +37,14 @@
             <groupId>com.mysql</groupId>
             <artifactId>mysql-connector-j</artifactId>
             <version>${mysql.connector.version}</version>
+        </dependency>
+
+        <!-- JUnit 5 for the unit tests and the DAO round-trip checks. -->
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <version>${junit.version}</version>
+            <scope>test</scope>
         </dependency>
     </dependencies>
 
@@ -49,10 +59,22 @@
             </plugin>
 
             <!--
+                Surefire runs the JUnit 5 tests on `mvn test`. The DAO tests skip
+                themselves when no database is reachable (see ReadingDaoTest), so the
+                build stays green on a machine without Docker; the model tests always run.
+            -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <version>3.5.2</version>
+            </plugin>
+
+            <!--
                 exec:java lets each module be launched without a hand-built classpath, e.g.:
                   mvn exec:java -Dexec.mainClass=${server.mainClass}
                   mvn exec:java -Dexec.mainClass=${simulator.mainClass}
                   mvn exec:java -Dexec.mainClass=${dashboard.mainClass}
+                  mvn exec:java -Dexec.mainClass=${persistence.mainClass}
                 The server main is the default so a bare `mvn exec:java` starts the server.
             -->
             <plugin>

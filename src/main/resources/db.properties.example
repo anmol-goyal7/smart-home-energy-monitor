@@ -1,8 +1,19 @@
 # Copy this file to db.properties and fill in your local values.
 # db.properties is intentionally git-ignored so credentials never enter version control.
+#
+# The values below already match the MySQL service in docker-compose.yml, so with
+# `docker compose up -d` a plain copy of this file needs no editing at all.
+#
+# Every key here can also be overridden by an environment variable, which is how
+# the benchmarks and CI pass credentials without writing a file: replace dots with
+# underscores and upper-case the name, e.g. jdbc.url -> JDBC_URL.
 
 # --- JDBC (MySQL) ---
-jdbc.url=jdbc:mysql://localhost:3306/smart_home_energy?serverTimezone=UTC
+# sslMode and allowPublicKeyRetrieval are set for a local development container:
+# MySQL 8 authenticates with caching_sha2_password, which otherwise refuses to
+# hand over its public key on an unencrypted connection. Do not carry these two
+# parameters over to a deployment that crosses a network.
+jdbc.url=jdbc:mysql://localhost:3306/smart_home_energy?serverTimezone=UTC&sslMode=DISABLED&allowPublicKeyRetrieval=true
 jdbc.user=energy_app
 jdbc.password=change_me
 jdbc.driver=com.mysql.cj.jdbc.Driver

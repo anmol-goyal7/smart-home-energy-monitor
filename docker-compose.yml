@@ -1,0 +1,53 @@
+# Smart Home Energy Monitor — local database
+#
+#   docker compose up -d
+#
+# Brings up MySQL 8 with the schema created and the reference data seeded. The
+# scripts in sql/ are mounted into the image's init directory, which runs every
+# .sql file it finds there, in filename order, the first time the data volume is
+# empty — "schema.sql" sorts before "seed.sql", so the tables exist before the
+# seed inserts run.
+#
+# Because initialisation only happens on an empty volume, re-running the scripts
+# after a schema change means removing the volume:
+#
+#   docker compose down -v && docker compose up -d
+#
+# Credentials here match src/main/resources/db.properties.example, so copying
+# that file to db.properties is enough to connect with no further editing.
+
+services:
+  mysql:
+    image: mysql:8.4
+    container_name: energy-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: root_dev_only
+      MYSQL_DATABASE: smart_home_energy
+      MYSQL_USER: energy_app
+      MYSQL_PASSWORD: change_me
+    ports:
+      # Host 3306 -> container 3306. Change the host side if a local MySQL
+      # already owns the port, and update jdbc.url to match.
+      - "3306:3306"
+    volumes:
+      - energy-mysql-data:/var/lib/mysql
+      # Read-only: the init scripts are project sources, not container state.
+      - ./sql/schema.sql:/docker-entrypoint-initdb.d/schema.sql:ro
+      - ./sql/seed.sql:/docker-entrypoint-initdb.d/seed.sql:ro
+    command:
+      # The server defaults to UTC so DATETIME(3) values are unambiguous
+      # regardless of the host's timezone; jdbc.url sets serverTimezone to match.
+      - --default-time-zone=+00:00
+    healthcheck:
+      # `docker compose up -d` returns as soon as the container starts, but MySQL
+      # needs a few more seconds before it accepts connections. Depend on this
+      # healthcheck rather than guessing with a sleep.
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-u", "root", "-proot_dev_only"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+volumes:
+  energy-mysql-data:
