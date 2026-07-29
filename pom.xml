@@ -60,8 +60,10 @@
 
             <!--
                 Surefire runs the JUnit 5 tests on `mvn test`. The DAO tests skip
-                themselves when no database is reachable (see ReadingDaoTest), so the
-                build stays green on a machine without Docker; the model tests always run.
+                themselves when no database is reachable (see PersistenceRoundTripTest), so
+                the build stays green on a machine without Docker; everything else — the
+                model, protocol, dispatcher, simulator, and dashboard-model tests — runs
+                anywhere, headless included.
             -->
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>

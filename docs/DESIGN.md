@@ -59,3 +59,42 @@ of extra indirection and a handoff (a queue/worker) between reading and evaluati
 adds latency measured in milliseconds and a little more moving machinery than a single
 inline call. For a monitoring system where responsiveness of ingest matters more than
 shaving milliseconds off detection latency, decoupling the two is the sounder structure.
+
+## Why the dispatcher's queue is bounded, and drops when it fills
+
+Putting a queue between the socket readers and their consumers raises the question of what
+happens when the consumers cannot keep up — a database that has gone away, or a dashboard
+that has stopped reading its socket. An unbounded queue is the tempting answer because it
+never refuses anything, but it does not actually preserve those readings: it converts a
+visible problem into an out-of-memory failure twenty minutes later, at which point the
+server stops recording anything at all and the operator has an unreadable heap dump instead
+of a symptom. Blocking the producer is the other option, and it is worse for this system in
+particular, because the producer is a socket read loop: back-pressure there stops the server
+draining its TCP buffers, which stops the meters sending, which means the readings are lost
+anyway and the failure has spread to every appliance rather than staying with the sink that
+caused it. So the queue is bounded, overflow drops the newest arrival, and every drop is
+counted and reported in the server's status line. The tradeoff is real — under sustained
+overload this system loses readings on purpose — but it loses them in a way that is
+measurable, bounded, and confined to the moment of overload, which for monitoring telemetry
+sampled once a second is a far better failure than either alternative.
+
+The same argument, one level down, is why each dashboard subscriber gets its own bounded
+outbox and its own writer thread. A socket write blocks once the receiver stops draining,
+so writing to subscribers directly from a dispatcher worker would let a dashboard paused in
+a debugger stall the worker, back up the shared queue, and take the database writes down
+with it. A slow subscriber should cost that subscriber its frames and nothing else.
+
+## Why the dashboard live feed reuses the meter wire format
+
+The server could publish to dashboards in any encoding it liked — the two ends are both ours
+— and a richer format (JSON, or a binary frame carrying the device name alongside the
+reading) would let the dashboard render a little more without asking the database. It uses
+the meter format instead, with a one-line `SUBSCRIBE`/`OK` handshake in front of it. The
+reason is that a second format means a second grammar, a second parser, a second set of
+tests, and a second thing to remember to change when a field is added — and the two would be
+kept in step by discipline rather than by the compiler. Reusing the meter frames means the
+dashboard decodes its feed with the same `WireFormatValidator` and `MessageParser` the
+server validates ingest with, so the format is defined once and verified once. The cost is
+that the feed inherits the meter format's limits: it can carry a reading and nothing else,
+so alerts will need a second frame type in Phase 3 rather than an extra field. That is the
+price of the constraint, and it is a smaller price than two parsers.

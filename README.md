@@ -10,9 +10,12 @@ This repository is the course project for **Advanced Programming Practice (APP)*
 system is deliberately built to exercise, in one coherent application, all five
 programming paradigms surveyed across the five units of the syllabus.
 
-> **Project status.** The repository currently holds the full design, the database scripts,
-> and a documented class scaffold; the implementation is in progress against the phased plan
-> in [Milestones](#milestones). Sections below describe the target system — the
+> **Project status.** Phases 1 and 2 are implemented: the database layer, and the live
+> pipeline end to end — meter simulators streaming over TCP, the validating DFA, the
+> thread-per-client server and its dispatcher, and the Swing dashboard showing the feed.
+> Detection and analytics (Phase 3) and the measured evidence (Phase 4) are still to come,
+> against the phased plan in [Milestones](#milestones). Sections below describe the target
+> system, and anything not yet built says which phase it belongs to — the
 > [Engineering evidence](#engineering-evidence) tables are filled in as each measurement is
 > actually taken, so an empty cell means "not yet measured", never "assumed".
 
@@ -239,7 +242,11 @@ RDG|D3|T1721817600000|V228.40|I4.10|P998.20
 
 The single source of truth for the delimiter, tags, header, and terminator is
 `protocol.MeterMessage`, referenced by both the simulator (which formats) and the
-validator/parser (which read), so producer and consumer cannot drift apart.
+validator/parser (which read), so producer and consumer cannot drift apart. It also defines
+the dashboard live feed's subscribe handshake, which keeps every string this system puts on
+a wire declared in one file. The decimal fields are formatted under `Locale.ROOT`: the
+default would render `228,40` under a locale such as `fr-FR`, and every meter would then be
+rejected on that machine and nowhere else.
 
 ### The validating DFA
 
@@ -495,14 +502,24 @@ published stream, the `DashboardController` applies it to an observable `Dashboa
 the views repaint from the model. All socket reads and JDBC queries run off the event
 dispatch thread via `SwingWorker`; only model-to-view updates touch the EDT.
 
-| Panel | Shows | Notes |
-| ----- | ----- | ----- |
-| `AppliancePanel` | One tile per appliance: live voltage, current, power, and state | Colour reflects the most severe active condition |
-| `LiveChartPanel` | A scrolling strip chart of the last ~60 seconds of load | Drawn directly in `paintComponent` with `Graphics2D` — no charting library |
-| `HistoryChartPanel` | Per-device history over a selectable window, read over JDBC | Query runs on a `SwingWorker`, never on the EDT |
-| `EventLogPanel` | Running alert log, newest first, severity-coloured | Fed by the publisher's alert channel and backfilled from `events` |
-| `ThresholdEditorPanel` | Editable per-device limits, committed through `ThresholdDao` | Writes to MySQL, then triggers a `RuleContext` reload |
-| `DfaStatePanel` | The automaton's current state as characters stream in | Highlights the active row of the transition table; flashes the trap state on rejection |
+| Panel | Shows | Notes | Status |
+| ----- | ----- | ----- | ------ |
+| `AppliancePanel` | One tile per appliance: live voltage, current, power, and a sparkline of recent load | Drawn entirely in `paintComponent` with `Graphics2D`; colour reflects the most severe active condition | built |
+| `HistoryChartPanel` | Per-device history over a selectable window, read over JDBC | Query runs on a `SwingWorker`, never on the EDT | built |
+| `EventLogPanel` | Running alert log, newest first, severity-coloured | Backfilled from `events`; fed by the publisher's alert channel once the rule engine exists | built (empty until Phase 3) |
+| `LiveChartPanel` | A scrolling strip chart of the last ~60 seconds of load across the home | Drawn directly in `paintComponent` with `Graphics2D` — no charting library | Layer 2, Phase 4 |
+| `ThresholdEditorPanel` | Editable per-device limits, committed through `ThresholdDao` | Writes to MySQL, then triggers a `RuleContext` reload | Layer 2, Phase 4 |
+| `DfaStatePanel` | The automaton's current state as characters stream in | Highlights the active row of the transition table; flashes the trap state on rejection | Layer 2, Phase 4 |
+
+The live feed carries the same `RDG|…` frames the meters send, so the dashboard decodes it
+with the same `WireFormatValidator` and `MessageParser` the server uses on the way in — one
+grammar, one parser, tested once. The subscribe handshake is defined alongside the frame
+format in `protocol.MeterMessage`.
+
+`DashboardModel` refuses to be mutated from anywhere but the event dispatch thread, and
+throws naming the offending thread if it is. Swing components are not thread-safe, and the
+symptom of getting that wrong is not an exception but a repaint that goes missing once an
+hour on someone else's machine.
 
 The threshold editor is the shortest path through the whole system in a single user action:
 a UI edit (Unit II) becomes a JDBC write (Unit III) that reloads the rule engine (Unit I) and
@@ -656,8 +673,11 @@ With Docker available, the database comes up already schema'd and seeded:
 docker compose up -d          # MySQL 8, schema.sql and seed.sql applied on first boot
 cp src/main/resources/db.properties.example src/main/resources/db.properties
 mvn clean package
-./scripts/demo.sh             # starts server, simulators, and dashboard together
 ```
+
+Then start the three processes in three terminals, as under
+[Manual setup](#manual-setup-no-docker) steps 4–6. (`scripts/demo.sh`, which starts them
+together and drives the scripted scenarios, arrives with Phase 4.)
 
 `db.properties` is git-ignored so credentials never enter version control. The example file
 already matches the Docker Compose credentials, so no editing is needed for the default
@@ -696,14 +716,26 @@ cp src/main/resources/db.properties.example src/main/resources/db.properties
 mvn clean package
 ```
 
-**4. Start the server** — the accept strategy is selectable at startup:
+**4. Start the server**
 
 ```bash
 mvn exec:java -Dexec.mainClass=com.smarthome.energy.server.EnergyMonitorServer
-mvn exec:java -Dexec.mainClass=com.smarthome.energy.server.EnergyMonitorServer -Dexec.args="--strategy pool --pool-size 8"
 ```
 
 (The server main is the configured default, so a bare `mvn exec:java` also starts it.)
+
+| Option | Effect |
+| ------ | ------ |
+| `--meter-port N` | override the meter ingest port |
+| `--dashboard-port N` | override the live-feed port |
+| `--no-persistence` | run the live pipeline with no MySQL at all: readings are validated, dispatched, and broadcast to dashboards, but not stored. A diagnostic mode for working on the networking path — history, alerts, and the analytics have nothing to read without it |
+
+The server prints a status line every ten seconds (`meters=6 subscribers=1 accepted=…
+delivered=… dropped=… queued=… rate=…/s`) and drains the dispatcher on shutdown.
+
+The swappable accept strategy (`--strategy pool --pool-size 8`) is a Layer 2 addition and
+arrives with Phase 4; until then the server is thread-per-client, as `DESIGN.md` argues it
+should be at this scale.
 
 **5. Start the meter simulators** — in a second terminal:
 
@@ -711,11 +743,29 @@ mvn exec:java -Dexec.mainClass=com.smarthome.energy.server.EnergyMonitorServer -
 mvn exec:java -Dexec.mainClass=com.smarthome.energy.simulator.SimulatorLauncher
 ```
 
+| Option | Effect |
+| ------ | ------ |
+| `--host H`, `--port N` | where the server is |
+| `--interval MS` | milliseconds between readings from each meter |
+| `--anomaly P` | probability that a reading is an injected spike, sag, or overload |
+| `--corrupt P` | probability that a frame is deliberately damaged before being sent, to exercise the server's DFA rejection path |
+| `--devices 1,2,3` | run a subset of the seeded fleet |
+| `--seed N` | seed the generators, so an interesting run can be replayed exactly |
+
 **6. Start the dashboard** — in a third terminal:
 
 ```bash
 mvn exec:java -Dexec.mainClass=com.smarthome.energy.client.DashboardApp
 ```
+
+| Option | Effect |
+| ------ | ------ |
+| `--host H`, `--port N` | where the server's live feed is |
+| `--no-db` | skip JDBC entirely: live tiles only, no history or alerts |
+
+The dashboard opens on the live feed alone if the database is unreachable, rather than
+refusing to start — the live view is most useful precisely when something behind it has
+broken. It reconnects on its own if the server restarts.
 
 **7. Run the Python analytics** (any time after data has accumulated):
 
@@ -754,6 +804,11 @@ The `incident` scenario runs for about three minutes and is deterministic:
 mvn test                      # unit tests, including the DFA suite
 mvn test -Dtest=WireFormatFuzzTest   # ~100k randomised DFA vs. regex comparisons
 ```
+
+79 tests at the end of Phase 2. The eight DAO round-trip tests skip themselves with a
+stated reason when no database is reachable, so the build stays green on a machine without
+Docker; everything else — the protocol, the dispatcher, the waveform generator, and the
+dashboard model — runs anywhere.
 
 ### Benchmarks
 
@@ -809,19 +864,25 @@ smart-home-energy-monitor/
 
 ## Milestones
 
-- **Phase 1 — Persistence foundation.** MySQL schema in place, Docker Compose bringing it up
-  reproducibly, and a single-client JDBC CRUD path working (insert a reading, read it back).
-  Establishes the `db` layer and the schema.
-- **Phase 2 — Live pipeline.** The wire protocol and the validating DFA; TCP sockets and the
-  multithreaded, thread-per-client server; simulators streaming; readings flowing live into
-  the dashboard. Establishes the `server`, `simulator`, `protocol`, and `client` paths end to
-  end. **This is the point at which the project is complete against its core specification.**
+- **Phase 1 — Persistence foundation. Done.** MySQL schema in place, Docker Compose bringing
+  it up reproducibly, and a single-client JDBC CRUD path working (insert a reading, read it
+  back). Establishes the `db` layer and the schema.
+- **Phase 2 — Live pipeline. Done.** The wire protocol and the validating DFA; TCP sockets
+  and the multithreaded, thread-per-client server; simulators streaming; readings flowing
+  live into the dashboard. Establishes the `server`, `simulator`, `protocol`, and `client`
+  paths end to end. **This is the point at which the project is complete against its core
+  specification**, less the detection that Phase 3 adds.
 - **Phase 3 — Detection and analytics.** The rule engine and alerting; the Python
   multiprocessing analytics, cost model, and peak-hour report.
 - **Phase 4 — Evidence and polish.** The Layer 2 additions: the benchmark harnesses and the
   four [Engineering evidence](#engineering-evidence) measurements, the failure-mode
-  demonstrations, the test suite including the DFA fuzz comparison, the scripted demo
-  scenario, and the design-thinking report.
+  demonstrations, the remaining Layer 2 panels, the scripted demo scenario, and the
+  design-thinking report.
+
+The DFA fuzz comparison was originally listed under Phase 4. It moved forward to Phase 2:
+it is the evidence that the automaton recognises the right language, and the automaton is
+what every reading in Phase 2 already passes through — deferring the check would have meant
+building three more phases on an unverified recogniser.
 
 Phases 1–3 are the graded core; Phase 4 is what supports the Analyze/Evaluate level of the
 rubric. Nothing in Phase 4 is started before Phase 3 runs end to end.
@@ -841,6 +902,9 @@ recorded rationale and, where a tradeoff is quantitative, a measurement behind i
 | Why TCP rather than UDP for the meter streams? | [`docs/DESIGN.md`](docs/DESIGN.md) |
 | Why thread-per-client rather than a thread pool? | [`docs/DESIGN.md`](docs/DESIGN.md), quantified by [Evidence 1](#1-concurrency-model--thread-per-client-vs-thread-pool) |
 | Why is the rule engine off the ingest path? | [`docs/DESIGN.md`](docs/DESIGN.md) |
+| What happens when a consumer cannot keep up with ingest? | [`docs/DESIGN.md`](docs/DESIGN.md) — the queue is bounded and drops on purpose, and every drop is counted |
+| Why does the dashboard live feed reuse the meter wire format? | [`docs/DESIGN.md`](docs/DESIGN.md) — one grammar, one parser, verified once |
+| Why does `DashboardModel` throw if touched off the EDT? | [Dashboard](#dashboard) — the alternative is a repaint that goes missing once an hour on someone else's machine |
 | Why MySQL rather than flat files? | [`docs/DESIGN.md`](docs/DESIGN.md) |
 | Why a hand-written DFA rather than a regular expression? | [The validating DFA](#the-validating-dfa) — a regex compiles to one anyway; writing it explicitly makes the automaton inspectable and yields the error position for free |
 | How do you know the DFA is correct? | [Verifying the automaton](#verifying-the-automaton) — randomised equivalence against a reference regex |
