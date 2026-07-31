@@ -4,7 +4,7 @@ A monitoring system that ingests live power readings from simulated smart meters
 per household appliance, persists them, evaluates them for power-quality problems in real
 time, and presents both the live stream and historical trends to an operator. A separate
 Python module mines the accumulated history for peak-hour demand, per-device usage trends,
-and time-of-use cost
+and time-of-use cost.
 
 This repository is the course project for **Advanced Programming Practice (APP)**. The
 system is deliberately built to exercise, in one coherent application, all five
@@ -952,84 +952,244 @@ decides what the `WHERE` clause means.
 
 ## Build and run
 
-### Prerequisites
+This section assumes nothing is installed. Following it top to bottom on a clean Linux or
+Windows machine gets you a running system; every command is given for both.
 
-- JDK 17 or newer
-- Apache Maven 3.9+
-- Docker and Docker Compose (recommended), **or** a local MySQL 8.x
-- Python 3.10+ (for the analytics module)
+If you only want to see it work, do [What you need](#what-you-need), then
+[Get the project](#get-the-project), then the quick start for your platform — five commands
+in total.
 
-### Quick start
+### What you need
 
-With Docker available, the database comes up already schema'd and seeded:
+| | Version | Why |
+| - | ------- | --- |
+| **JDK** | 17 or newer | The build targets Java 17. Newer JDKs are fine — this was developed on 26 |
+| **Apache Maven** | 3.9+ | Build and run targets |
+| **Docker** + Compose v2 | any current | Brings up MySQL already schema'd and seeded. Optional — see [Running without Docker](#running-without-docker) |
+| **Python** | 3.10+ | The analytics module only. The Java side does not need it |
+| **Git** | any | To clone |
+
+A display is needed only for the Swing dashboard. The server, the simulators, the analytics,
+and every benchmark run headless.
+
+#### Installing on Linux
+
+<details open>
+<summary><b>Debian / Ubuntu</b></summary>
 
 ```bash
-docker compose up -d          # MySQL 8, schema.sql and seed.sql applied on first boot
+sudo apt update
+sudo apt install -y openjdk-21-jdk maven python3 python3-venv git
+sudo apt install -y docker.io docker-compose-v2
+```
+</details>
+
+<details>
+<summary><b>Fedora</b></summary>
+
+```bash
+sudo dnf install -y java-21-openjdk-devel maven python3 git
+sudo dnf install -y docker docker-compose-plugin
+```
+</details>
+
+<details>
+<summary><b>Arch</b></summary>
+
+```bash
+sudo pacman -S --needed jdk21-openjdk maven python git docker docker-compose
+```
+</details>
+
+Then start Docker and grant yourself access to it:
+
+```bash
+sudo systemctl enable --now docker
+sudo usermod -aG docker "$USER"
+```
+
+**Log out and back in** for the group change to take effect — it does not apply to your
+current shell. If you would rather not add yourself to the `docker` group, skip the
+`usermod` line and prefix every `docker` command below with `sudo`; `scripts/demo.sh`
+detects that case and prefixes `sudo` itself.
+
+#### Installing on Windows
+
+Run in PowerShell:
+
+```powershell
+winget install --id EclipseAdoptium.Temurin.21.JDK -e
+winget install --id Apache.Maven -e
+winget install --id Python.Python.3.12 -e
+winget install --id Git.Git -e
+winget install --id Docker.DockerDesktop -e
+```
+
+Then:
+
+1. **Close and reopen PowerShell.** The installers edit `PATH`, and an open terminal will not
+   see the change.
+2. **Launch Docker Desktop and wait for it to say "Engine running".** Nothing that touches
+   the database works until it does. Docker Desktop needs WSL 2; its installer will prompt
+   you if the feature is missing, and that prompt does require a reboot.
+3. If `mvn -v` reports that `JAVA_HOME` is not set, set it once:
+   ```powershell
+   [Environment]::SetEnvironmentVariable(
+       'JAVA_HOME',
+       (Get-ChildItem 'C:\Program Files\Eclipse Adoptium' -Filter 'jdk-21*' | Select-Object -First 1).FullName,
+       'User')
+   ```
+   then reopen PowerShell again.
+
+**A note on which shell to use.** Every command in this section is given for both PowerShell
+and bash. `scripts/demo.sh` is a bash script, so on Windows it runs under **Git Bash**
+(installed with Git, above) or **WSL** — not in PowerShell. Everything the script does can
+also be done by hand, and [Run the stack by hand](#run-the-stack-by-hand) is exactly that, so
+no Windows user is locked out of anything.
+
+#### Check the toolchain
+
+```
+java -version     # 17 or higher
+mvn -v            # 3.9 or higher, and a JAVA_HOME it can find
+docker --version
+docker compose version
+python --version  # Linux: python3 --version   Windows: py --version
+```
+
+If `docker compose version` fails but `docker-compose --version` works, you have Compose v1;
+install the v2 plugin, or substitute `docker-compose` for `docker compose` throughout.
+
+### Get the project
+
+```bash
+git clone https://github.com/anmol-goyal7/smart-home-energy-monitor.git
+cd smart-home-energy-monitor
+```
+
+Every path in this document is relative to that directory.
+
+### Quick start — Linux, macOS, WSL, or Git Bash
+
+```bash
+docker compose up -d
 cp src/main/resources/db.properties.example src/main/resources/db.properties
+./scripts/demo.sh
+```
+
+That is the whole thing: `demo.sh` builds, waits for MySQL's healthcheck, starts the server,
+waits for its ports to accept, opens the dashboard, and starts the six meter simulators.
+Ctrl-C stops all of it.
+
+| Command | What it does |
+| ------- | ------------ |
+| `./scripts/demo.sh` | The full stack, streaming with random anomalies |
+| `./scripts/demo.sh --scenario incident` | The same, replaying the scripted three-minute fault — see [The scripted demo](#the-scripted-demo) |
+| `./scripts/demo.sh --failure lost-update` | One failure demonstration, then exit |
+| `./scripts/demo.sh --list` | The scenarios and failure demonstrations available |
+| `./scripts/demo.sh --no-dashboard` | Server and simulators only |
+| `./scripts/demo.sh --stop` | Stop whatever a previous run left running |
+
+The script waits on MySQL's healthcheck rather than guessing with a `sleep`, waits for each
+port to accept before starting the process that connects to it, and records every process it
+starts so Ctrl-C — or `--stop` from another terminal — takes the whole stack down. It skips
+the Swing window when `DISPLAY` is unset instead of failing, so the same command works over
+SSH.
+
+### Quick start — Windows PowerShell
+
+`demo.sh` is a bash script, so PowerShell runs the same four processes by hand. Open
+**four** PowerShell windows, all in the project directory.
+
+```powershell
+# Window 1 — once, then leave it
+docker compose up -d
+copy src\main\resources\db.properties.example src\main\resources\db.properties
+mvn clean package
+mvn exec:java "-Dexec.mainClass=com.smarthome.energy.server.EnergyMonitorServer"
+```
+
+Wait for `[server] meter ingest listening on port 5060`, then:
+
+```powershell
+# Window 2 — the dashboard
+mvn exec:java "-Dexec.mainClass=com.smarthome.energy.client.DashboardApp"
+```
+
+```powershell
+# Window 3 — the meters
+mvn exec:java "-Dexec.mainClass=com.smarthome.energy.simulator.SimulatorLauncher"
+```
+
+Tiles should start updating within a second or two. For the scripted fault timeline, use
+window 3's simulator with `"-Dexec.args=--scenario incident"`.
+
+```powershell
+# Window 4 — the analytics, after a few minutes of data has accumulated
+cd python
+py -m venv .venv
+.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+python -m analytics
+```
+
+If `Activate.ps1` is blocked by the execution policy, allow it for this window only:
+
+```powershell
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+```
+
+Ctrl-C in each window stops that process; `docker compose down` stops the database.
+
+### Run the stack by hand
+
+The four processes, on either platform. Start them **in order** — the schema must exist
+before the server starts, and the server must be running before the simulators or dashboard
+connect.
+
+**1. Start the database.** Once per machine; it keeps running in the background.
+
+```bash
+docker compose up -d
+```
+
+MySQL 8 comes up with `sql/schema.sql` and `sql/seed.sql` already applied. Those scripts run
+only on a **first** boot against an empty data volume, so after changing the schema you need
+`docker compose down -v && docker compose up -d` — without `-v` the old volume is reused and
+your change will not appear.
+
+**2. Configure the JDBC credentials.**
+
+```bash
+cp src/main/resources/db.properties.example src/main/resources/db.properties   # Linux/macOS
+copy src\main\resources\db.properties.example src\main\resources\db.properties  # Windows
+```
+
+The example already matches the Docker Compose credentials, so a plain copy needs no editing.
+`db.properties` is git-ignored, which is why it is not simply committed. The server
+deliberately refuses to invent a JDBC URL if this file is missing — a silent fallback is how
+a project ends up writing to the wrong database.
+
+**3. Build.**
+
+```bash
 mvn clean package
 ```
 
-Then either start the three processes in three terminals, as under
-[Manual setup](#manual-setup-no-docker) steps 4–6, or let the demo script do all of it:
+The first run downloads Maven's dependencies and takes a few minutes; later runs are seconds.
+It also runs the tests — 157 Java tests, which should all pass.
 
-```bash
-./scripts/demo.sh                      # database, server, simulators, dashboard
-./scripts/demo.sh --scenario incident  # the same, replaying the scripted three-minute fault
-./scripts/demo.sh --failure lost-update   # one failure-mode demonstration, then exit
-./scripts/demo.sh --list               # the scenarios and failure demonstrations
-./scripts/demo.sh --stop               # stop whatever it started
-```
-
-The script builds first, waits for MySQL's healthcheck rather than guessing with a `sleep`,
-waits for each port to accept before starting the process that connects to it, and records
-every process it starts so Ctrl-C — or `--stop` from another terminal — takes the whole stack
-down. It skips the Swing window when `DISPLAY` is unset instead of failing, so the same
-command works over SSH.
-
-`db.properties` is git-ignored so credentials never enter version control. The example file
-already matches the Docker Compose credentials, so no editing is needed for the default
-setup.
-
-### Manual setup (no Docker)
-
-Run the steps **in order** — the schema must exist before the server starts, and the server
-must be running before the simulators or dashboard connect.
-
-**1. Create the schema and seed data**
-
-```bash
-mysql -u root -p < sql/schema.sql
-mysql -u root -p smart_home_energy < sql/seed.sql
-```
-
-Optionally create a dedicated application user:
-
-```sql
-CREATE USER 'energy_app'@'localhost' IDENTIFIED BY 'change_me';
-GRANT SELECT, INSERT, UPDATE, DELETE ON smart_home_energy.* TO 'energy_app'@'localhost';
-FLUSH PRIVILEGES;
-```
-
-**2. Configure database credentials**
-
-```bash
-cp src/main/resources/db.properties.example src/main/resources/db.properties
-# edit db.properties with your JDBC URL, user, and password
-```
-
-**3. Build**
-
-```bash
-mvn clean package
-```
-
-**4. Start the server**
+**4. Start the server.**
 
 ```bash
 mvn exec:java -Dexec.mainClass=com.smarthome.energy.server.EnergyMonitorServer
 ```
+```powershell
+mvn exec:java "-Dexec.mainClass=com.smarthome.energy.server.EnergyMonitorServer"
+```
 
-(The server main is the configured default, so a bare `mvn exec:java` also starts it.)
+(The server main is the configured default, so a bare `mvn exec:java` also starts it.) Wait
+for `[server] meter ingest listening on port 5060` before starting anything else.
 
 | Option | Effect |
 | ------ | ------ |
@@ -1047,6 +1207,9 @@ The `threads=` field is live/peak for the accept strategy in force.
 ```bash
 mvn exec:java -Dexec.mainClass=com.smarthome.energy.simulator.SimulatorLauncher
 ```
+```powershell
+mvn exec:java "-Dexec.mainClass=com.smarthome.energy.simulator.SimulatorLauncher"
+```
 
 | Option | Effect |
 | ------ | ------ |
@@ -1056,11 +1219,27 @@ mvn exec:java -Dexec.mainClass=com.smarthome.energy.simulator.SimulatorLauncher
 | `--corrupt P` | probability that a frame is deliberately damaged before being sent, to exercise the server's DFA rejection path |
 | `--devices 1,2,3` | run a subset of the seeded fleet |
 | `--seed N` | seed the generators, so an interesting run can be replayed exactly |
+| `--scenario NAME` | replay a scripted fault timeline instead of random anomalies, then stop |
+| `--list-scenarios` | print the available scenarios and their running orders |
+
+To pass options through Maven, put them in `exec.args`:
+
+```bash
+mvn exec:java -Dexec.mainClass=com.smarthome.energy.simulator.SimulatorLauncher \
+    -Dexec.args="--scenario incident"
+```
+```powershell
+mvn exec:java "-Dexec.mainClass=com.smarthome.energy.simulator.SimulatorLauncher" `
+    "-Dexec.args=--scenario incident"
+```
 
 **6. Start the dashboard** — in a third terminal:
 
 ```bash
 mvn exec:java -Dexec.mainClass=com.smarthome.energy.client.DashboardApp
+```
+```powershell
+mvn exec:java "-Dexec.mainClass=com.smarthome.energy.client.DashboardApp"
 ```
 
 | Option | Effect |
@@ -1076,8 +1255,15 @@ broken. It reconnects on its own if the server restarts.
 
 ```bash
 cd python
-python -m venv .venv
+python3 -m venv .venv
 . .venv/bin/activate
+pip install -r requirements.txt
+python -m analytics
+```
+```powershell
+cd python
+py -m venv .venv
+.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 python -m analytics
 ```
@@ -1093,6 +1279,69 @@ Connection settings come from `ENERGY_DB_HOST`, `ENERGY_DB_PORT`, `ENERGY_DB_USE
 so with the default setup nothing needs exporting. (The Java side deliberately refuses to
 default its JDBC URL; this module may, because it only ever reads, so the cost of guessing
 wrong here is a connection error rather than a write to the wrong database.)
+
+### What a working system looks like
+
+The server, within a second of the simulators starting:
+
+```
+[server] meter ingest listening on port 5060
+[server] accept strategy: thread-per-client
+[server] conn-1 (/127.0.0.1:46938) connected
+[server] meters=6 threads=6/6 subscribers=1 accepted=60 delivered=60 dropped=0 queued=0 sinkFailures=0 alerts=1 rate=6.0/s
+```
+
+`meters=6` and a non-zero `rate` mean ingest is working. `subscribers=1` means the dashboard
+is attached. `alerts=` climbing slowly is the rule engine catching the simulators' injected
+anomalies — that is expected, not a fault.
+
+The dashboard shows six tiles updating once a second, the **Live** tab filling in from the
+left, and the **Alerts** tab gaining a row whenever a threshold is crossed.
+
+To confirm data is really landing in MySQL:
+
+```bash
+docker compose exec mysql mysql -u energy_app -pchange_me smart_home_energy \
+    -e "SELECT COUNT(*) FROM readings; SELECT COUNT(*) FROM events;"
+```
+
+### Shutting down
+
+```bash
+./scripts/demo.sh --stop   # if you started it that way
+docker compose down        # stop MySQL, keeping the stored readings
+docker compose down -v     # stop MySQL and delete the data volume as well
+```
+
+Ctrl-C in each terminal stops the Java processes started by hand.
+
+### Running without Docker
+
+Docker only supplies MySQL. With a local MySQL 8.x, load the schema yourself and point
+`db.properties` at it; everything else is unchanged.
+
+```bash
+mysql -u root -p < sql/schema.sql
+mysql -u root -p smart_home_energy < sql/seed.sql
+```
+
+Optionally create a dedicated application user, so the project is not running as root:
+
+```sql
+CREATE USER 'energy_app'@'localhost' IDENTIFIED BY 'change_me';
+GRANT SELECT, INSERT, UPDATE, DELETE ON smart_home_energy.* TO 'energy_app'@'localhost';
+FLUSH PRIVILEGES;
+```
+
+Then edit `src/main/resources/db.properties` with your JDBC URL, user, and password, and
+continue from step 3 of [Run the stack by hand](#run-the-stack-by-hand). Two settings in the
+example file — `sslMode=DISABLED` and `allowPublicKeyRetrieval=true` — exist for a local
+development container and should not be carried over to a deployment that crosses a network.
+
+If your MySQL is not in UTC, either start it with `--default-time-zone=+00:00` as the Compose
+file does, or accept that `reading_ts` values are interpreted in the server's zone. The
+project converts explicitly through UTC at every boundary, so a consistent server zone is all
+that is required.
 
 ### The scripted demo
 
@@ -1211,6 +1460,27 @@ mvn exec:java -Dexec.mainClass=com.smarthome.energy.demo.FailureDemos -Dexec.arg
 additionally needs a display, and says so rather than throwing a `HeadlessException` out of a
 script. Each writes only to its own throwaway table or its own sentinel time window and
 cleans up before it returns.
+
+### Troubleshooting
+
+| Symptom | Cause and fix |
+| ------- | ------------- |
+| `permission denied while trying to connect to the Docker daemon socket` | Linux, and you are not in the `docker` group. Either `sudo usermod -aG docker "$USER"` and log out and back in, or prefix `docker` commands with `sudo`. `scripts/demo.sh` handles this itself |
+| `Cannot connect to the Docker daemon` | Linux: `sudo systemctl start docker`. Windows: Docker Desktop is not running — launch it and wait for "Engine running" |
+| `missing required setting 'jdbc.url'` | Step 2 was skipped. Copy `db.properties.example` to `db.properties` |
+| `Communications link failure` / `database unavailable` at start-up | MySQL is still initialising. `docker compose ps` should show `(healthy)`; first boot takes 20–30 seconds. `docker compose logs mysql` if it does not get there |
+| `Bind for 0.0.0.0:3306 failed: port is already allocated` | Something else — usually a locally installed MySQL — already owns 3306. Stop it, or change the **host** side of the port mapping in `docker-compose.yml` (e.g. `"3307:3306"`) and update `jdbc.url` to match |
+| `Address already in use` on 5060 or 5061 | A previous server is still running. `./scripts/demo.sh --stop`, or find it: `lsof -i :5060` (Linux) / `Get-NetTCPConnection -LocalPort 5060` (Windows) |
+| The server logs `the devices table is empty` | The seed did not run, because the data volume already existed. `docker compose down -v && docker compose up -d` |
+| Schema changes do not appear | Same cause. The init scripts run only against an empty volume |
+| `[dashboard] no display available` | Expected when headless. The server, simulators, and analytics do not need a display; over SSH use `--no-dashboard` |
+| `mvn` reports `JAVA_HOME` is not set | Windows: set it as shown under [Installing on Windows](#installing-on-windows). Linux: `export JAVA_HOME=$(dirname $(dirname $(readlink -f $(which java))))` |
+| `./scripts/demo.sh: bad interpreter` or `\r: command not found` | The file was checked out with Windows line endings. `sed -i 's/\r$//' scripts/demo.sh`, or clone with `git config --global core.autocrlf input` |
+| `demo.sh` is "not recognized" in PowerShell | It is a bash script. Use Git Bash or WSL, or follow [Run the stack by hand](#run-the-stack-by-hand) |
+| `ModuleNotFoundError: No module named 'mysql'` | The analytics virtualenv is not active, or `pip install -r requirements.txt` has not run. Both are step 7 |
+| `python: command not found` on Linux | Use `python3`. On Windows use `py` |
+| Tiles are grey and say the appliance is silent | The simulators are not running, or are pointed at the wrong port. The server's `meters=` count says how many are actually connected |
+| The event log fills with alerts immediately | Expected with a high `--anomaly` value. Pass `--anomaly 0` for a quiet run, or use `--scenario incident` for a deterministic one |
 
 ---
 
