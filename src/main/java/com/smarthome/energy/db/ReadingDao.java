@@ -88,8 +88,34 @@ public final class ReadingDao {
      */
     public long insert(Reading reading) {
         Objects.requireNonNull(reading, "reading");
-        try (Connection c = connections.getConnection();
-             PreparedStatement ps = c.prepareStatement(SQL_INSERT, Statement.RETURN_GENERATED_KEYS)) {
+        try (Connection c = connections.getConnection()) {
+            return insert(c, reading);
+        } catch (SQLException e) {
+            throw new DataAccessException("failed to insert reading for device " + reading.getDeviceId(), e);
+        }
+    }
+
+    /**
+     * Persists one reading on a connection the caller owns.
+     *
+     * <p>This overload exists because a reading and the events it triggers must be written in
+     * one transaction — the event's {@code triggering_reading_id} points at the row this
+     * insert generates, and an alert pointing at a reading that was never committed is a lie
+     * the database should not be able to hold. The caller (the server's persistence sink)
+     * turns off auto-commit, calls this, writes the events on the same connection, and
+     * commits; this method neither commits nor closes what it did not open.</p>
+     *
+     * @param connection an open connection, whose transaction state belongs to the caller
+     * @param reading    the reading to store; must not be null
+     * @return the generated {@code reading_id}
+     * @throws DataAccessException  if the insert fails
+     * @throws NullPointerException if either argument is null
+     */
+    public long insert(Connection connection, Reading reading) {
+        Objects.requireNonNull(connection, "connection");
+        Objects.requireNonNull(reading, "reading");
+        try (PreparedStatement ps =
+                     connection.prepareStatement(SQL_INSERT, Statement.RETURN_GENERATED_KEYS)) {
 
             ps.setInt(1, reading.getDeviceId());
             ps.setObject(2, utc(reading.getReadingTimestamp()));

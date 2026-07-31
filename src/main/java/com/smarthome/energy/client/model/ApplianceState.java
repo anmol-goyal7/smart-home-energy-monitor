@@ -39,6 +39,17 @@ public final class ApplianceState {
     /** How long without a reading before an appliance is shown as stale. */
     public static final Duration STALE_AFTER = Duration.ofSeconds(5);
 
+    /**
+     * How long a tile stays coloured after its last alert.
+     *
+     * <p>An alert arrives immediately behind the reading that caused it, so clearing the
+     * colour on the next reading would make a sustained fault flash green once a second —
+     * the tile would spend half its life claiming the appliance was fine. Holding the colour
+     * for a few readings means the tile is red for as long as the condition lasts and returns
+     * to normal a moment after it stops.</p>
+     */
+    public static final Duration ALERT_HOLD = Duration.ofSeconds(3);
+
     private final int deviceId;
     private String name;
     private final Deque<Double> recentPower = new ArrayDeque<>(HISTORY_SAMPLES);
@@ -48,6 +59,7 @@ public final class ApplianceState {
     private long readingCount;
     private double peakPower;
     private Severity alertSeverity;
+    private Instant alertedAt;
 
     /**
      * @param deviceId the device this state belongs to; must be positive
@@ -81,6 +93,7 @@ public final class ApplianceState {
         // and a meter with a wrong clock should not be able to look permanently fresh.
         this.lastUpdatedAt = Instant.now();
         this.readingCount++;
+        clearExpiredAlert(lastUpdatedAt);
         this.peakPower = Math.max(peakPower, reading.getPowerWatts());
 
         if (recentPower.size() == HISTORY_SAMPLES) {
@@ -130,19 +143,52 @@ public final class ApplianceState {
     }
 
     /**
-     * @return the severity of the appliance's most recent alert, or null if it has none.
-     *         Nothing sets this until the rule engine lands in Phase 3; the panel already
-     *         colours itself from it, so alerts light up the tiles the moment they exist.
+     * @return the severity of the appliance's currently active alert, or null if it has none.
+     *         The panel colours itself from this
      */
     public Severity getAlertSeverity() {
         return alertSeverity;
     }
 
     /**
-     * @param alertSeverity the severity to show, or null to clear the alert state
+     * Marks this appliance as alerting.
+     *
+     * <p>Within the {@link #ALERT_HOLD} window the most severe alert wins: a reading that is
+     * both a sag and an overload raises two events, and a tile that showed whichever arrived
+     * last would understate the situation half the time.</p>
+     *
+     * @param severity the severity of the alert just received; must not be null
+     * @throws NullPointerException if {@code severity} is null
+     */
+    public void raiseAlert(Severity severity) {
+        Objects.requireNonNull(severity, "severity");
+        // The dashboard's own clock, not the event's detectedAt: the hold is about how long
+        // ago this window heard about the alert, and the server's clock may not be this one.
+        Instant now = Instant.now();
+        clearExpiredAlert(now);
+        if (alertSeverity == null || severity.compareTo(alertSeverity) > 0) {
+            this.alertSeverity = severity;
+        }
+        this.alertedAt = now;
+    }
+
+    /**
+     * @param alertSeverity the severity to show, or null to clear the alert state. Used by the
+     *                      tests and by anything that needs to set the state outright rather
+     *                      than by receiving an alert
      */
     public void setAlertSeverity(Severity alertSeverity) {
         this.alertSeverity = alertSeverity;
+        this.alertedAt = alertSeverity == null ? null : Instant.now();
+    }
+
+    /** Drops the alert colour once nothing has re-raised it for {@link #ALERT_HOLD}. */
+    private void clearExpiredAlert(Instant now) {
+        if (alertSeverity != null && alertedAt != null
+                && Duration.between(alertedAt, now).compareTo(ALERT_HOLD) > 0) {
+            this.alertSeverity = null;
+            this.alertedAt = null;
+        }
     }
 
     /**

@@ -35,8 +35,9 @@ import java.util.Objects;
  * understanding — one renderer instance is reused for every cell rather than a component
  * existing per row, which is why a table with a thousand alerts in it still scrolls.</p>
  *
- * <p>Until the rule engine lands in Phase 3 the table is populated only from the
- * {@code events} table, so on a fresh database it is legitimately empty and says so.</p>
+ * <p>The table is backfilled from the {@code events} table when the window opens and grows
+ * from the live alert channel after that, so on a fresh database with nothing yet detected it
+ * is legitimately empty and says so.</p>
  *
  * <p>Syllabus mapping: Unit II — GUI programming with Swing/AWT ({@code JTable}, rendering).</p>
  *

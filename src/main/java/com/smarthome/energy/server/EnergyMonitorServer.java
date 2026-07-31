@@ -3,8 +3,10 @@ package com.smarthome.energy.server;
 import com.smarthome.energy.db.ConnectionFactory;
 import com.smarthome.energy.db.DataAccessException;
 import com.smarthome.energy.db.DeviceDao;
-import com.smarthome.energy.db.ReadingDao;
+import com.smarthome.energy.db.ThresholdDao;
 import com.smarthome.energy.model.Device;
+import com.smarthome.energy.rules.RuleContext;
+import com.smarthome.energy.rules.RuleEngine;
 
 import java.io.IOException;
 import java.net.ServerSocket;
@@ -68,6 +70,7 @@ public final class EnergyMonitorServer implements AutoCloseable {
     private ServerSocket listener;
     private DashboardPublisher publisher;
     private ReadingDispatcher dispatcher;
+    private RuleEngine engine;
     private Thread statusThread;
 
     /**
@@ -99,13 +102,25 @@ public final class EnergyMonitorServer implements AutoCloseable {
         if (persistenceEnabled) {
             ConnectionFactory connections = config.connectionFactory();
             System.out.println("[server] persistence enabled: " + connections.getUrl());
-            ReadingDao readings = new ReadingDao(connections);
-            Set<Integer> catalogue = loadCatalogue(new DeviceDao(connections));
-            knownDevice = catalogue::contains;
-            sinks.add(ReadingDispatcher.Sink.of("persistence", readings::insert));
+
+            List<Device> catalogue = loadCatalogue(new DeviceDao(connections));
+            Set<Integer> ids = new LinkedHashSet<>();
+            catalogue.forEach(device -> ids.add(device.getDeviceId()));
+            knownDevice = ids::contains;
+
+            // Detection reads its limits from the same database, so it comes up with
+            // persistence and not without it: with no thresholds table there is nothing to
+            // decide what "normal" is, and a rule engine that invents its own limits would
+            // raise alerts against numbers nobody configured.
+            RuleContext thresholds = new RuleContext(catalogue, new ThresholdDao(connections).findAll());
+            engine = new RuleEngine(thresholds);
+            System.out.println("[server] detection enabled: " + thresholds);
+
+            sinks.add(new PersistenceSink(connections, engine, publisher::publishAlert));
         } else {
             System.out.println("[server] persistence DISABLED (--no-persistence): readings are "
-                    + "broadcast to dashboards but not stored");
+                    + "broadcast to dashboards but not stored, and no thresholds are loaded, so "
+                    + "nothing is evaluated for alerts");
         }
 
         dispatcher = new ReadingDispatcher(sinks);
@@ -184,20 +199,21 @@ public final class EnergyMonitorServer implements AutoCloseable {
         }
     }
 
-    /** Reads the device catalogue so unknown device ids can be refused at the door. */
-    private static Set<Integer> loadCatalogue(DeviceDao devices) {
+    /**
+     * Reads the device catalogue, which serves two purposes: refusing unknown device ids at
+     * the door, and naming devices in the alerts the rule engine raises.
+     */
+    private static List<Device> loadCatalogue(DeviceDao devices) {
         List<Device> catalogue = devices.findAll();
         if (catalogue.isEmpty()) {
             System.err.println("[server] the devices table is empty — every reading will be "
                     + "refused. Load sql/seed.sql.");
         }
-        Set<Integer> ids = new LinkedHashSet<>();
         for (Device device : catalogue) {
-            ids.add(device.getDeviceId());
             System.out.println("[server]   device " + device.getDeviceId() + ": " + device.getName()
                     + " (" + device.getRatedPowerWatts() + " W rated)");
         }
-        return ids;
+        return catalogue;
     }
 
     /** Prints one status line every {@link #STATUS_INTERVAL_SECONDS} so the run is observable. */
@@ -216,8 +232,9 @@ public final class EnergyMonitorServer implements AutoCloseable {
             ReadingDispatcher.Stats stats = dispatcher.stats();
             double rate = (stats.getDelivered() - previousDelivered) / (double) STATUS_INTERVAL_SECONDS;
             previousDelivered = stats.getDelivered();
-            System.out.printf("[server] meters=%d subscribers=%d %s rate=%.1f/s%n",
-                    handlers.size(), publisher.getSubscriberCount(), stats, rate);
+            String alerts = engine == null ? "" : " alerts=" + engine.getRaisedCount();
+            System.out.printf("[server] meters=%d subscribers=%d %s%s rate=%.1f/s%n",
+                    handlers.size(), publisher.getSubscriberCount(), stats, alerts, rate);
         }
     }
 

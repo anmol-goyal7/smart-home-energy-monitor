@@ -110,6 +110,17 @@ public final class DashboardController implements LiveFeedClient.Listener {
     /**
      * {@inheritDoc}
      *
+     * <p>Called on the live feed's thread; hands the alert to the EDT, where it both enters
+     * the log and colours the offending appliance's tile.</p>
+     */
+    @Override
+    public void alertReceived(Event alert) {
+        SwingUtilities.invokeLater(() -> model.applyAlert(alert));
+    }
+
+    /**
+     * {@inheritDoc}
+     *
      * <p>Called on the live feed's thread; hands the change to the EDT.</p>
      */
     @Override

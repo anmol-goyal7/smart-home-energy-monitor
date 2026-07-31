@@ -1,5 +1,6 @@
 package com.smarthome.energy.server;
 
+import com.smarthome.energy.model.Event;
 import com.smarthome.energy.model.Reading;
 import com.smarthome.energy.protocol.MeterMessage;
 
@@ -69,6 +70,7 @@ public final class DashboardPublisher implements AutoCloseable {
     private final CopyOnWriteArrayList<Subscriber> subscribers = new CopyOnWriteArrayList<>();
     private final AtomicInteger connectionCounter = new AtomicInteger();
     private final AtomicLong published = new AtomicLong();
+    private final AtomicLong publishedAlerts = new AtomicLong();
     private final AtomicLong droppedFrames = new AtomicLong();
 
     private volatile boolean running;
@@ -133,6 +135,34 @@ public final class DashboardPublisher implements AutoCloseable {
         published.incrementAndGet();
     }
 
+    /**
+     * Offers an alert to every subscriber, on the same connection as the readings.
+     *
+     * <p>Alerts go out as {@code ALT} frames through the same per-subscriber outbox the
+     * readings use, which is what keeps them in order relative to the reading that caused
+     * them: a dashboard sees the 264 V reading and then the spike it raised, rather than the
+     * two racing on separate sockets.</p>
+     *
+     * <p>Alerts are rare and matter more than any single reading, so a full outbox drops them
+     * exactly as it drops readings — a subscriber far enough behind to be losing frames is
+     * one whose alert would arrive minutes late anyway, and the alert log will still have it
+     * from the database. Never blocks and never throws.</p>
+     *
+     * @param event the alert to broadcast; must not be null
+     * @throws NullPointerException if {@code event} is null
+     */
+    public void publishAlert(Event event) {
+        Objects.requireNonNull(event, "event");
+        if (subscribers.isEmpty()) {
+            return;
+        }
+        String frame = MeterMessage.formatAlert(event);
+        for (Subscriber subscriber : subscribers) {
+            subscriber.offer(frame);
+        }
+        publishedAlerts.incrementAndGet();
+    }
+
     /** @return how many dashboards are currently subscribed. */
     public int getSubscriberCount() {
         return subscribers.size();
@@ -141,6 +171,11 @@ public final class DashboardPublisher implements AutoCloseable {
     /** @return readings offered to the subscribers since start-up. */
     public long getPublishedCount() {
         return published.get();
+    }
+
+    /** @return alerts offered to the subscribers since start-up. */
+    public long getPublishedAlertCount() {
+        return publishedAlerts.get();
     }
 
     /** @return frames dropped because a subscriber's outbox was full. */

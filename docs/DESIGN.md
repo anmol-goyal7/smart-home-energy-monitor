@@ -60,6 +60,45 @@ adds latency measured in milliseconds and a little more moving machinery than a 
 inline call. For a monitoring system where responsiveness of ingest matters more than
 shaving milliseconds off detection latency, decoupling the two is the sounder structure.
 
+## Why persistence and detection are one dispatcher sink, not two
+
+The dispatcher exists to fan a reading out to independent consumers, and "store it" and
+"evaluate it" read as exactly that: two concerns, two sinks. They are one sink because of a
+foreign key. An event's `triggering_reading_id` points at the row the reading insert
+generates, so detection cannot write an event until persistence has handed back the key —
+and the two writes have to be in the same transaction, or a crash between them leaves the
+database holding an alert about a reading that was rolled back, or a reading whose alert was
+lost. Two sinks would mean two connections, two transactions, and no way to relate them; the
+only thing that would recover the ordering is a shared connection, at which point they are
+one consumer wearing two names. The tradeoff is that the sink does more than one thing and
+its name says so (`persistence+detection`), against a structure that looks tidier in the
+diagram and cannot be made atomic. Atomicity wins: the whole reason the events table has that
+foreign key is so an alert can be traced back to the measurement that caused it.
+
+The rule engine itself stays out of this. It is a pure function from a reading to the alerts
+it deserves — no DAO, no connection, no transaction — and the sink is what owns the writing.
+That keeps the detection logic testable without a database and keeps every decision about
+transactions in one class rather than distributed across three rules.
+
+One consequence is worth stating plainly: because the thresholds live in the database,
+`--no-persistence` means no detection either. Giving the engine hard-coded fallback limits
+would keep the feature alive in that mode, at the price of a server that raises alerts
+against numbers nobody configured and that differ from the ones the dashboard displays. A
+diagnostic mode that quietly changes what counts as an alert is worse than one that says it
+detects nothing.
+
+## Why alerts are published only after the commit
+
+The sink could offer its alerts to the dashboards the moment the rules fire, a few
+milliseconds earlier than it does. It waits for the commit instead, because an operator who
+sees an alert on screen will go looking for it in the alert log — and a transaction that
+rolls back after the alert was published leaves them looking for something that, as far as
+every record in the system is concerned, never happened. The cost is those milliseconds and a
+failure mode of its own: if the process dies between the commit and the publish, the alert is
+in the database and never reached the screen. That is the better failure. A missing alert on a
+live feed is recovered by the dashboard's next refresh from the `events` table; an alert that
+exists only on a screen is recovered by nothing.
+
 ## Why the dispatcher's queue is bounded, and drops when it fills
 
 Putting a queue between the socket readers and their consumers raises the question of what
@@ -98,3 +137,25 @@ server validates ingest with, so the format is defined once and verified once. T
 that the feed inherits the meter format's limits: it can carry a reading and nothing else,
 so alerts will need a second frame type in Phase 3 rather than an extra field. That is the
 price of the constraint, and it is a smaller price than two parsers.
+
+### What that second frame type actually cost
+
+Phase 3 paid the bill, and it came to about forty lines: an `ALT` header, five more tagged
+fields, a formatter beside the existing one, and a `parseAlert` beside the existing parser —
+all in the same two classes, so there is still one file that declares every string this
+system puts on a wire. Two things are worth recording about how it was paid.
+
+The alert frame is **not** run through the DFA. The automaton recognises the meter grammar,
+which is the language the untrusted side of the system speaks — a socket anyone can connect
+to and send anything down. Alert frames originate in this server, so extending the automaton
+to a second language would have doubled the thing whose correctness the fuzz comparison
+exists to establish, in exchange for validating input this process wrote itself. They are
+checked field by field in the parser instead, which is not a shortcut: `parseAlert` rejects a
+wrong header, an unknown event type or severity, a non-numeric value, and a device id of
+zero. "Both ends are ours" is a statement about intent, not about what arrives on a socket.
+
+Alerts also share the readings' connection rather than getting one of their own. A second
+channel would let the alert about a 264 V reading overtake the 264 V itself and colour a tile
+for a value it was not displaying. One ordered stream makes that unrepresentable, and it
+costs nothing: the alert is one more frame in the same per-subscriber outbox, dropped by the
+same rule if a subscriber has fallen far enough behind to be losing readings anyway.

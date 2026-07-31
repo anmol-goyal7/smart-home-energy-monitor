@@ -10,14 +10,17 @@ This repository is the course project for **Advanced Programming Practice (APP)*
 system is deliberately built to exercise, in one coherent application, all five
 programming paradigms surveyed across the five units of the syllabus .
 
-> **Project status.** Phases 1 and 2 are implemented: the database layer, and the live
-> pipeline end to end — meter simulators streaming over TCP, the validating DFA, the
-> thread-per-client server and its dispatcher, and the Swing dashboard showing the feed.
-> Detection and analytics (Phase 3) and the measured evidence (Phase 4) are still to come,
-> against the phased plan in [Milestones](#milestones). Sections below describe the target
-> system, and anything not yet built says which phase it belongs to — the
-> [Engineering evidence](#engineering-evidence) tables are filled in as each measurement is
-> actually taken, so an empty cell means "not yet measured", never "assumed".
+> **Project status.** Phases 1–3 are implemented: the database layer; the live pipeline end
+> to end — meter simulators streaming over TCP, the validating DFA, the thread-per-client
+> server and its dispatcher, and the Swing dashboard showing the feed; and detection and
+> analytics — the rule engine raising spike, sag, and overload alerts into the dashboard and
+> the `events` table, and the Python multiprocessing analytics with its peak-hour report and
+> time-of-use cost model. **That is the graded core, running end to end.** The measured
+> evidence and the Layer 2 additions (Phase 4) are still to come, against the phased plan in
+> [Milestones](#milestones). Sections below describe the target system, and anything not yet
+> built says which phase it belongs to — the [Engineering evidence](#engineering-evidence)
+> tables are filled in as each measurement is actually taken, so an empty cell means "not yet
+> measured", never "assumed".
 
 ---
 
@@ -115,14 +118,13 @@ flowchart TD
         VALIDATE -->|rejected| SKIP[Log position and skip]
         VALIDATE -->|accepted| PARSE[MessageParser to Reading]
         PARSE --> DISPATCH[ReadingDispatcher]
-        DISPATCH --> RULES[RuleEngine]
+        DISPATCH --> SINK[PersistenceSink - one transaction]
+        SINK --> RULES[RuleEngine]
     end
 
-    DISPATCH --> READDAO[ReadingDao]
-    READDAO --> DB[(MySQL)]
-    RULES -->|events| DB
+    SINK -->|reading + its events| DB[(MySQL)]
     DISPATCH --> PUBLISH[DashboardPublisher]
-    RULES -->|alerts| PUBLISH
+    SINK -->|alerts, after commit| PUBLISH
 
     PUBLISH -->|live feed over TCP| DASHBOARD
     DB -->|history over JDBC| DASHBOARD
@@ -147,13 +149,16 @@ Data flow from meter to dashboard, step by step:
    lines are rejected with the offending character position, logged, and skipped; the
    connection stays open.
 4. An accepted line is turned into a typed `Reading` by **`MessageParser`**.
-5. The handler hands the reading to the **`ReadingDispatcher`**, which fans it out to three
-   consumers without the handler needing to know about any of them:
-   - **`ReadingDao`** persists it to MySQL.
-   - the **`RuleEngine`** evaluates it for power-quality events (off the socket read path).
-   - the **`DashboardPublisher`** pushes it to any subscribed dashboards.
-6. Any `Event` the rule engine raises is persisted through `EventDao` and forwarded to the
-   dashboard's alert channel.
+5. The handler hands the reading to the **`ReadingDispatcher`**, which fans it out to its
+   sinks without the handler needing to know about any of them:
+   - the **`DashboardPublisher`** pushes it to any subscribed dashboards;
+   - the **`PersistenceSink`** stores it and evaluates it (both off the socket read path).
+6. Inside that sink, and inside one transaction: `ReadingDao` inserts the reading, the
+   **`RuleEngine`** evaluates it against the cached thresholds, and `EventDao` inserts any
+   `Event` raised — bound to the `reading_id` the insert just generated. The transaction
+   commits, and only then are the alerts forwarded to the dashboard's alert channel as
+   `ALT` frames on the live feed. Persistence and detection share one sink because they
+   share one transaction; the reasoning is in [`docs/DESIGN.md`](docs/DESIGN.md).
 7. The **dashboard** shows the live stream (from the publisher over TCP) alongside history
    and past alerts (queried from MySQL over JDBC), and can write threshold changes back.
 8. Independently, the **Python analytics** job reads the accumulated history from MySQL and
@@ -247,6 +252,36 @@ the dashboard live feed's subscribe handshake, which keeps every string this sys
 a wire declared in one file. The decimal fields are formatted under `Locale.ROOT`: the
 default would render `228,40` under a locale such as `fr-FR`, and every meter would then be
 rejected on that machine and nowhere else.
+
+### The alert frame
+
+The dashboard's live feed carries one more frame type, added in Phase 3: the alerts the rule
+engine raises. A reading frame cannot express one, which is the price `DESIGN.md` predicted
+for reusing the meter format on the feed. It is built from the same pieces — the header, the
+delimiter, one tag per field, the newline terminator — so it is read by the same kind of
+code:
+
+```
+ALT|D<deviceId>|T<epochMillis>|E<eventType>|S<severity>|M<measured>|L<limit>|X<detail>\n
+```
+
+```
+ALT|D2|T1721817600000|EVOLTAGE_SPIKE|SCRITICAL|M264.00|L253.00|XLiving Room HVAC: supply at 264.00 V, above the 253.00 V ceiling
+```
+
+Three details are deliberate. The **detail is last** and is free text, so it may contain
+spaces; the delimiter and the terminator are stripped from it on the way out, because a rule
+description containing a `|` would otherwise produce a frame that splits into the wrong
+number of fields. The **`triggering_reading_id` is not on the wire** — it is a database key,
+and a dashboard running without a database could do nothing with it but be misled, so
+everything the alert log displays is carried on the frame itself. And alert frames are **not
+run through the DFA**: the automaton recognises the meter grammar, which is the language the
+untrusted side of the system speaks. Alerts are checked instead by `MessageParser.parseAlert`,
+which validates every field rather than assuming the sender got it right.
+
+Alerts travel on the same connection as the readings, and therefore in order behind the
+reading that caused them: two channels would let the alert about a 264 V reading arrive
+before the 264 V itself, and a tile would go red for a value it was not showing.
 
 ### The validating DFA
 
@@ -479,19 +514,55 @@ Three rules ship:
 
 With the seeded defaults, the supply band is 207–253 V (±10% around a 230 V nominal), so a
 reading of 262 V raises a `VOLTAGE_SPIKE` and 198 V raises a `VOLTAGE_SAG`; a refrigerator
-(overload ceiling 500 W) drawing 540 W raises a `LOAD_OVERLOAD`.
+(overload ceiling 500 W) drawing 540 W raises a `LOAD_OVERLOAD`. A threshold row bounds one
+device and one metric; a row with a `NULL` device id is the default for any device without
+an override. A metric with **no** row at all is unbounded and raises nothing — a missing
+threshold means nobody has said what is normal here, and inventing a limit would raise alerts
+against numbers no one configured.
 
-Each rule sets the event's **severity** from the size of the excursion beyond the limit — a
-small margin is a `WARNING`, a large one is `CRITICAL`. Every raised event is persisted
-through `EventDao` and forwarded to the dashboard's alert channel. New rule types are added
-by writing another `DetectionRule` implementation and registering it; the engine and the
-ingest path are untouched.
+### Severity
 
-The `RuleContext` is **reloadable**: when the dashboard's threshold editor commits a change,
-the engine swaps in a freshly loaded context, so an edited limit takes effect on the next
-reading without a restart. Detection itself runs on the dispatcher's worker rather than on
-the `ClientHandler` read loop, so a burst of anomalies cannot slow meter ingestion. The
-reasoning is expanded in [`docs/DESIGN.md`](docs/DESIGN.md).
+Each rule sets the event's **severity** from the size of the excursion, as a fraction of the
+limit rather than an absolute margin: one rule bounds a router at 40 W and a water heater at
+3300 W, and "50 W over" is a fault on the first and noise on the second, while "10% over"
+means the same thing on both.
+
+The two cut-offs are each rule's own, because voltage and power are not comparable on that
+scale — a supply drifting 5% out of band is a serious event, while a motor drawing 5% over
+its rating on start-up is an appliance working normally:
+
+| Rule | `WARNING` at | `CRITICAL` at | Worked example |
+| ---- | ------------ | ------------- | -------------- |
+| `VoltageSpikeRule` | 1% past the ceiling | 4% past | 256 V → `WARNING`; 264 V → `CRITICAL` |
+| `VoltageSagRule` | 1% below the floor | 4% below | 205 V → `WARNING`; 198 V → `CRITICAL` |
+| `LoadOverloadRule` | 2% past the ceiling | 20% past | 540 W vs 500 W → `WARNING`; 625 W → `CRITICAL` |
+
+The seeded power ceilings already include a start-up allowance, which is why the overload
+bands are the wider pair.
+
+### Where the events go
+
+The engine **evaluates but does not persist**: it is a pure function from a reading to the
+alerts it deserves, which is what makes it testable without a database. Writing is
+`PersistenceSink`'s job, because an event's `triggering_reading_id` is the key of a row being
+inserted in the same transaction — so whoever owns that transaction has to own the event
+insert too, or the two cannot be atomic. The sink inserts the reading, calls the engine with
+the key it got back, inserts the events, commits, and only then publishes the alerts to the
+dashboards. Publishing last is deliberate: an alert on screen that a rolled-back transaction
+means never happened is one the operator cannot go back and find in the log.
+
+New rule types are added by writing another `DetectionRule` implementation and registering
+it; the engine, the sink, and the ingest path are untouched.
+
+The `RuleContext` is **reloadable**: it is `volatile` and replaced wholesale, never mutated,
+so a worker mid-evaluation sees one consistent set of thresholds and the next reading picks
+up the edit. That is what the Phase 4 threshold editor commits into. Detection itself runs on
+the dispatcher's worker rather than on the `ClientHandler` read loop, so a burst of anomalies
+cannot slow meter ingestion. The reasoning is expanded in [`docs/DESIGN.md`](docs/DESIGN.md).
+
+Detection comes up **with persistence and not without it**: the thresholds live in the
+database, so `--no-persistence` starts a server that validates, dispatches, and broadcasts
+readings but evaluates nothing.
 
 ---
 
@@ -506,7 +577,7 @@ dispatch thread via `SwingWorker`; only model-to-view updates touch the EDT.
 | ----- | ----- | ----- | ------ |
 | `AppliancePanel` | One tile per appliance: live voltage, current, power, and a sparkline of recent load | Drawn entirely in `paintComponent` with `Graphics2D`; colour reflects the most severe active condition | built |
 | `HistoryChartPanel` | Per-device history over a selectable window, read over JDBC | Query runs on a `SwingWorker`, never on the EDT | built |
-| `EventLogPanel` | Running alert log, newest first, severity-coloured | Backfilled from `events`; fed by the publisher's alert channel once the rule engine exists | built (empty until Phase 3) |
+| `EventLogPanel` | Running alert log, newest first, severity-coloured | Backfilled from `events` at start-up, then fed live by the publisher's alert channel | built |
 | `LiveChartPanel` | A scrolling strip chart of the last ~60 seconds of load across the home | Drawn directly in `paintComponent` with `Graphics2D` — no charting library | Layer 2, Phase 4 |
 | `ThresholdEditorPanel` | Editable per-device limits, committed through `ThresholdDao` | Writes to MySQL, then triggers a `RuleContext` reload | Layer 2, Phase 4 |
 | `DfaStatePanel` | The automaton's current state as characters stream in | Highlights the active row of the transition table; flashes the trap state on rejection | Layer 2, Phase 4 |
@@ -514,7 +585,16 @@ dispatch thread via `SwingWorker`; only model-to-view updates touch the EDT.
 The live feed carries the same `RDG|…` frames the meters send, so the dashboard decodes it
 with the same `WireFormatValidator` and `MessageParser` the server uses on the way in — one
 grammar, one parser, tested once. The subscribe handshake is defined alongside the frame
-format in `protocol.MeterMessage`.
+format in `protocol.MeterMessage`, as is the [`ALT|…` alert frame](#the-alert-frame) the same
+connection carries.
+
+An arriving alert does two things: it goes to the top of the event log, and it colours the
+tile of the appliance it names. The colour is **held for three seconds** rather than cleared
+by the next reading — an alert arrives immediately behind the reading that caused it, so
+clearing on the next one would make a sustained fault flash green once a second, and a tile
+that spends half a fault claiming the appliance is fine is worse than no tile. A tile
+therefore stays coloured for as long as the condition lasts and returns to normal a moment
+after it stops. Where one reading raises two alerts, the more severe one is the colour.
 
 `DashboardModel` refuses to be mutated from anywhere but the event dispatch thread, and
 throws naming the offending thread if it is. Swing components are not thread-safe, and the
@@ -534,11 +614,13 @@ database and mines the accumulated history for insights the live dashboard does 
 It is run offline (for the report and demos), independent of the Java processes.
 
 - `config.py` — loads MySQL connection parameters from the environment.
-- `db.py` — opens connections and runs the read-only history queries.
+- `db.py` — opens connections and runs the read-only history queries. Every one is a
+  `SELECT`, and every parameter is bound rather than formatted into the SQL — the same rule
+  the Java DAOs follow with `PreparedStatement`, for the same reason.
 - `peak_hours.py` — buckets all readings by hour-of-day (00–23) and ranks the hours at which
   the whole home draws the most power.
-- `device_trends.py` — analyses one device's history (daily average, min/max, direction of
-  trend). This is the unit of work that is parallelised.
+- `device_trends.py` — analyses one device's history (average, min/max, duty cycle, direction
+  of trend). This is the unit of work that is parallelised.
 - `cost_model.py` — applies a time-of-use tariff to the measured consumption: the monthly
   bill per device, and the saving available from shifting a deferrable load (water heater,
   washing machine) out of the peak band.
@@ -554,12 +636,34 @@ It is run offline (for the report and demos), independent of the Java processes.
 The `multiprocessing` step is the syllabus focus of Unit IV: the workload partitions cleanly
 by device, so it is a natural fit for a process pool. `benchmark.py` exists so the choice can
 be defended with a measured speedup rather than an assertion — the number lands in
-[Engineering evidence](#engineering-evidence).
+[Engineering evidence](#engineering-evidence). (`benchmark.py` arrives with Phase 4; the rest
+of the module is built.)
+
+Each module splits its fetching from its arithmetic — `analyze_device` opens the connection,
+`summarise` does the sums — so every analysis function is a pure function over rows. That is
+what makes the Python suite runnable with neither MySQL nor the driver installed, and it is
+why the worker is `functools.partial(analyze_device, since=...)` rather than a closure: the
+callable is pickled and sent to each process, and only something importable by name survives
+that.
+
+**Averaging, and why it is done per device first.** The obvious aggregation — add every
+`power_watts` in an hour and divide by the row count — answers a question nobody asked: it
+gives the average draw of a *typical appliance*, and a meter that reports twice as often as
+its neighbours pulls the answer towards itself. What the home draws at 19:00 is the sum over
+appliances of what each is drawing, so each device is averaged over its own samples first and
+the averages are added. The result is a load in watts that is comparable between hours however
+the sampling varied, and it converts straight into kWh for the cost model.
 
 The cost model turns the telemetry into something actionable: rather than reporting only that
 the water heater averages 1.8 kW between 18:00 and 21:00, it reports what those hours cost
 under the peak tariff and what the same consumption would cost shifted into the off-peak
-band. Tariff bands are configuration, not code, so they can be matched to a local supplier.
+band. Tariff bands are configuration, not code, so they can be matched to a local supplier;
+the default is a plausible domestic schedule of off-peak 22:00–06:00, standard 06:00–18:00,
+and peak 18:00–22:00. A tariff that fails to price all 24 hours is rejected rather than
+silently costing part of the day at zero. Only **deferrable** loads (washer, heater,
+dishwasher) are recommended for shifting: a refrigerator's peak-band energy is expensive and
+cannot be rescheduled, and a report that suggests running it at 02:00 is one that gets
+ignored wholesale.
 
 ---
 
@@ -777,6 +881,18 @@ pip install -r requirements.txt
 python -m analytics
 ```
 
+| Option | Effect |
+| ------ | ------ |
+| `--hours N` | only analyse the last N hours (default: all stored history) |
+| `--top N` | how many peak hours to list (default: 5) |
+| `--processes N` | worker processes to use (default: one per device) |
+
+Connection settings come from `ENERGY_DB_HOST`, `ENERGY_DB_PORT`, `ENERGY_DB_USER`,
+`ENERGY_DB_PASSWORD`, and `ENERGY_DB_NAME`, defaulting to the Docker Compose credentials —
+so with the default setup nothing needs exporting. (The Java side deliberately refuses to
+default its JDBC URL; this module may, because it only ever reads, so the cost of guessing
+wrong here is a connection error rather than a write to the wrong database.)
+
 ### The scripted demo
 
 A live demonstration should never depend on a random anomaly firing at the right moment, so
@@ -803,12 +919,26 @@ The `incident` scenario runs for about three minutes and is deterministic:
 ```bash
 mvn test                      # unit tests, including the DFA suite
 mvn test -Dtest=WireFormatFuzzTest   # ~100k randomised DFA vs. regex comparisons
+
+cd python && python -m unittest discover -s tests -t .   # the analytics suite
 ```
 
-79 tests at the end of Phase 2. The eight DAO round-trip tests skip themselves with a
-stated reason when no database is reachable, so the build stays green on a machine without
-Docker; everything else — the protocol, the dispatcher, the waveform generator, and the
-dashboard model — runs anywhere.
+123 Java tests and 33 Python tests at the end of Phase 3. The eight DAO round-trip tests skip
+themselves with a stated reason when no database is reachable, so the build stays green on a
+machine without Docker; everything else — the protocol, the dispatcher, the waveform
+generator, the rule engine, the dashboard model, and the analytics — runs anywhere.
+
+Two of those suites are worth a note, because "no database" would otherwise mean "not
+tested":
+
+- `PersistenceSinkTest` runs against `RecordingDatabase`, a JDBC driver in the test tree that
+  records the calls made to it instead of storing anything. The claim under test — reading
+  and events on one connection, in one transaction, alerts published only after the commit,
+  everything rolled back if any insert fails — is a property of the *sequence of JDBC calls*,
+  so it can be asserted exactly, on any machine. A test that needed MySQL would be skipped on
+  every machine that lacks it, which is precisely where a regression would hide.
+- The Python suite exercises the analysis functions, which take rows and return values, so it
+  needs neither MySQL nor the MySQL driver installed.
 
 ### Benchmarks
 
@@ -838,9 +968,15 @@ smart-home-energy-monitor/
 │   └── DESIGN.md                   Design-decision rationale (for the viva)
 ├── python/                         Python analytics module root
 │   ├── requirements.txt            Analytics dependencies
-│   └── analytics/                  The analytics package (multiprocessing)
-│       ├── cost_model.py           Time-of-use tariff, bill, and load-shift savings
-│       └── benchmark.py            Serial vs. Pool timing comparison
+│   ├── analytics/                  The analytics package (multiprocessing)
+│   │   ├── config.py               MySQL settings from ENERGY_DB_* with local defaults
+│   │   ├── db.py                   Read-only history queries, one connection per worker
+│   │   ├── device_trends.py        The per-device analysis mapped across the pool
+│   │   ├── peak_hours.py           Whole-home hour-of-day demand profile
+│   │   ├── cost_model.py           Time-of-use tariff, bill, and load-shift savings
+│   │   ├── runner.py               Orchestration and report rendering
+│   │   └── benchmark.py            Serial vs. Pool timing comparison (Phase 4)
+│   └── tests/                      Analytics unit tests (no database required)
 └── src/
     ├── main/
     │   ├── resources/              Runtime configuration (db.properties)
@@ -872,8 +1008,10 @@ smart-home-energy-monitor/
   live into the dashboard. Establishes the `server`, `simulator`, `protocol`, and `client`
   paths end to end. **This is the point at which the project is complete against its core
   specification**, less the detection that Phase 3 adds.
-- **Phase 3 — Detection and analytics.** The rule engine and alerting; the Python
-  multiprocessing analytics, cost model, and peak-hour report.
+- **Phase 3 — Detection and analytics. Done.** The strategy-based rule engine and its
+  reloadable threshold context; alerts written with their reading in one transaction, and
+  published to the dashboard as a second frame type on the live feed; the Python
+  multiprocessing analytics, cost model, and peak-hour report. Completes the graded core.
 - **Phase 4 — Evidence and polish.** The Layer 2 additions: the benchmark harnesses and the
   four [Engineering evidence](#engineering-evidence) measurements, the failure-mode
   demonstrations, the remaining Layer 2 panels, the scripted demo scenario, and the
@@ -902,6 +1040,9 @@ recorded rationale and, where a tradeoff is quantitative, a measurement behind i
 | Why TCP rather than UDP for the meter streams? | [`docs/DESIGN.md`](docs/DESIGN.md) |
 | Why thread-per-client rather than a thread pool? | [`docs/DESIGN.md`](docs/DESIGN.md), quantified by [Evidence 1](#1-concurrency-model--thread-per-client-vs-thread-pool) |
 | Why is the rule engine off the ingest path? | [`docs/DESIGN.md`](docs/DESIGN.md) |
+| Why are persistence and detection one sink rather than two? | [`docs/DESIGN.md`](docs/DESIGN.md) — the event's foreign key is the reading's generated id, so the pair must share a transaction |
+| Why do the three rules use different severity cut-offs? | [Severity](#severity) — 5% out of band is a supply fault; 5% over a rated load is a motor starting |
+| Why does an alert need a second frame type? | [The alert frame](#the-alert-frame) — the cost `DESIGN.md` predicted for reusing the meter format on the feed |
 | What happens when a consumer cannot keep up with ingest? | [`docs/DESIGN.md`](docs/DESIGN.md) — the queue is bounded and drops on purpose, and every drop is counted |
 | Why does the dashboard live feed reuse the meter wire format? | [`docs/DESIGN.md`](docs/DESIGN.md) — one grammar, one parser, verified once |
 | Why does `DashboardModel` throw if touched off the EDT? | [Dashboard](#dashboard) — the alternative is a repaint that goes missing once an hour on someone else's machine |

@@ -80,8 +80,31 @@ public final class EventDao {
      */
     public void insert(Event event) {
         Objects.requireNonNull(event, "event");
-        try (Connection c = connections.getConnection();
-             PreparedStatement ps = c.prepareStatement(SQL_INSERT)) {
+        try (Connection c = connections.getConnection()) {
+            insert(c, event);
+        } catch (SQLException e) {
+            throw new DataAccessException("failed to insert " + event, e);
+        }
+    }
+
+    /**
+     * Persists one alert on a connection the caller owns.
+     *
+     * <p>The counterpart to {@code ReadingDao.insert(Connection, Reading)}: the server's
+     * persistence sink writes the reading and every event it triggered on one connection
+     * inside one transaction, so the {@code triggering_reading_id} foreign key can never
+     * point at a row that was rolled back. This method does not commit and does not close
+     * the connection.</p>
+     *
+     * @param connection an open connection, whose transaction state belongs to the caller
+     * @param event      the event to store; must not be null
+     * @throws DataAccessException  if the insert fails
+     * @throws NullPointerException if either argument is null
+     */
+    public void insert(Connection connection, Event event) {
+        Objects.requireNonNull(connection, "connection");
+        Objects.requireNonNull(event, "event");
+        try (PreparedStatement ps = connection.prepareStatement(SQL_INSERT)) {
 
             ps.setInt(1, event.getDeviceId());
             Long readingId = event.getTriggeringReadingId();

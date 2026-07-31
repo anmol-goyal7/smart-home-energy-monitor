@@ -1,7 +1,11 @@
 package com.smarthome.energy.protocol;
 
+import com.smarthome.energy.model.Event;
+import com.smarthome.energy.model.EventType;
 import com.smarthome.energy.model.Reading;
+import com.smarthome.energy.model.Severity;
 
+import java.time.Instant;
 import java.util.Objects;
 
 /**
@@ -98,6 +102,57 @@ public final class MessageParser {
         return Reading.fromEpochMillis(deviceId, epochMillis, voltage, current, power);
     }
 
+    /**
+     * Extracts the alert carried by an {@code ALT} frame from the dashboard live feed.
+     *
+     * <p>Unlike {@link #parse(String)}, this is not preceded by the automaton — the DFA
+     * recognises the meter grammar, not this one — so every field is checked here. That is
+     * also why the checks are not "cheap structural assertions": this method is the whole of
+     * the validation for an alert frame.</p>
+     *
+     * <p>The returned event carries no {@code triggeringReadingId}: the frame does not
+     * carry one, because a database key means nothing on the far side of the socket.</p>
+     *
+     * @param frame an alert line, with or without its terminator; must not be null
+     * @return the alert it carries
+     * @throws ProtocolException    if the line is not a well-formed alert frame
+     * @throws NullPointerException if {@code frame} is null
+     */
+    public Event parseAlert(String frame) throws ProtocolException {
+        Objects.requireNonNull(frame, "frame");
+
+        String line = stripTerminator(frame);
+        String[] tokens = split(line);
+
+        if (tokens.length != MeterMessage.ALERT_TOKEN_COUNT) {
+            throw new ProtocolException("expected " + MeterMessage.ALERT_TOKEN_COUNT
+                    + " fields, found " + tokens.length + " in: " + line);
+        }
+        if (!MeterMessage.ALERT_HEADER.equals(tokens[0])) {
+            throw new ProtocolException("expected header '" + MeterMessage.ALERT_HEADER + "', found '"
+                    + tokens[0] + "' in: " + line);
+        }
+
+        int deviceId = parseInt(field(tokens[1], MeterMessage.TAG_DEVICE, line), "device id", line);
+        long detectedAt = parseLong(field(tokens[2], MeterMessage.TAG_TIMESTAMP, line), "timestamp", line);
+        EventType type = parseEnum(EventType.class,
+                field(tokens[3], MeterMessage.TAG_EVENT_TYPE, line), "event type", line);
+        Severity severity = parseEnum(Severity.class,
+                field(tokens[4], MeterMessage.TAG_SEVERITY, line), "severity", line);
+        double measured = parseDecimal(field(tokens[5], MeterMessage.TAG_MEASURED, line),
+                "measured value", MAX_DECIMAL_10_2, line);
+        double limit = parseDecimal(field(tokens[6], MeterMessage.TAG_LIMIT, line),
+                "threshold value", MAX_DECIMAL_10_2, line);
+        String detail = field(tokens[7], MeterMessage.TAG_DETAIL, line);
+
+        if (deviceId <= 0) {
+            throw new ProtocolException("device id must be positive, was " + deviceId + " in: " + line);
+        }
+
+        return new Event(deviceId, null, type, severity, measured, limit,
+                detail.isEmpty() ? null : detail, Instant.ofEpochMilli(detectedAt));
+    }
+
     /** Removes the frame terminator if the caller kept it. */
     private static String stripTerminator(String line) {
         int end = line.length();
@@ -156,6 +211,16 @@ public final class MessageParser {
         } catch (NumberFormatException e) {
             throw new ProtocolException(field + " '" + text + "' does not fit a 64-bit integer in: "
                     + line, e);
+        }
+    }
+
+    private static <E extends Enum<E>> E parseEnum(Class<E> type, String text, String field, String line)
+            throws ProtocolException {
+        try {
+            return Enum.valueOf(type, text);
+        } catch (IllegalArgumentException e) {
+            throw new ProtocolException(field + " '" + text + "' is not one of "
+                    + java.util.Arrays.toString(type.getEnumConstants()) + " in: " + line, e);
         }
     }
 

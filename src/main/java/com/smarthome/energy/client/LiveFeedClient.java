@@ -1,5 +1,6 @@
 package com.smarthome.energy.client;
 
+import com.smarthome.energy.model.Event;
 import com.smarthome.energy.model.Reading;
 import com.smarthome.energy.protocol.MessageParser;
 import com.smarthome.energy.protocol.MeterMessage;
@@ -30,6 +31,11 @@ import java.util.Objects;
  * {@link WireFormatValidator} and {@link MessageParser} the server uses. The dashboard
  * therefore has no protocol code of its own to keep in step — a change to the wire format is
  * a change to one grammar and one parser.</p>
+ *
+ * <p>It also carries the rule engine's alerts, as {@code ALT} frames on the same connection.
+ * That is what keeps an alert behind the reading that raised it: two channels would let the
+ * alert about a 264 V reading arrive before the 264 V itself, and a tile would go red for a
+ * value it was not showing.</p>
  *
  * <h2>Reconnection</h2>
  *
@@ -68,6 +74,14 @@ public final class LiveFeedClient {
         void readingReceived(Reading reading);
 
         /**
+         * @param alert an alert the rule engine raised, delivered on the same connection and
+         *              in order behind the reading that caused it; called on the feed's own
+         *              thread. The event carries no {@code triggeringReadingId} — the frame
+         *              does not carry the database key
+         */
+        void alertReceived(Event alert);
+
+        /**
          * @param connected whether the feed is now up
          * @param detail    a short human-readable explanation
          */
@@ -84,6 +98,7 @@ public final class LiveFeedClient {
     private volatile Socket socket;
     private Thread thread;
     private long receivedCount;
+    private long alertCount;
     private long rejectedCount;
 
     /**
@@ -132,6 +147,11 @@ public final class LiveFeedClient {
     /** @return readings decoded from the feed since start-up. */
     public long getReceivedCount() {
         return receivedCount;
+    }
+
+    /** @return alerts decoded from the feed since start-up. */
+    public long getAlertCount() {
+        return alertCount;
     }
 
     /** @return frames from the feed that failed validation or parsing. */
@@ -206,6 +226,10 @@ public final class LiveFeedClient {
     private void readFrames(BufferedReader in) throws IOException {
         String line;
         while (running && (line = in.readLine()) != null) {
+            if (MeterMessage.isAlertFrame(line)) {
+                readAlert(line);
+                continue;
+            }
             if (!validator.validateLine(line).isAccepted()) {
                 rejectedCount++;
                 continue;
@@ -220,6 +244,25 @@ public final class LiveFeedClient {
         }
         if (running) {
             listener.connectionStateChanged(false, "server closed the live feed");
+        }
+    }
+
+    /**
+     * Decodes one alert frame.
+     *
+     * <p>The automaton is not consulted here: it recognises the meter grammar, which is a
+     * different language from the alert frame's. {@code parseAlert} does the whole check
+     * instead, and a frame it rejects is counted with the malformed readings — the dashboard
+     * treats "the server said something I do not understand" the same way whatever the
+     * something was.</p>
+     */
+    private void readAlert(String line) {
+        try {
+            Event alert = parser.parseAlert(line);
+            alertCount++;
+            listener.alertReceived(alert);
+        } catch (ProtocolException e) {
+            rejectedCount++;
         }
     }
 

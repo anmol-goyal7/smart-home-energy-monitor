@@ -188,8 +188,33 @@ public final class DashboardModel {
     }
 
     /**
-     * Adds one alert to the top of the log. Used by the rule engine's live alert channel in
-     * Phase 3; the log is populated from the database until then.
+     * Applies an alert that just arrived on the live feed: it enters the log and colours the
+     * offending appliance's tile.
+     *
+     * <p>An alert for a device with no tile — one whose readings the dashboard has not seen —
+     * is still logged. The alert log is the record of what happened, and dropping entries
+     * because the window has not met the device yet would be losing exactly the information
+     * the operator opened it for.</p>
+     *
+     * @param event the alert; must not be null
+     * @throws NullPointerException  if {@code event} is null
+     * @throws IllegalStateException if called off the event dispatch thread
+     */
+    public void applyAlert(Event event) {
+        requireEventDispatchThread();
+        Objects.requireNonNull(event, "event");
+
+        ApplianceState state = appliances.get(event.getDeviceId());
+        if (state != null) {
+            state.raiseAlert(event.getSeverity());
+            listeners.forEach(listener -> listener.applianceUpdated(state));
+        }
+        addEvent(event);
+    }
+
+    /**
+     * Adds one alert to the top of the log, without touching any appliance's state. The alert
+     * channel goes through {@link #applyAlert(Event)}; this is the log on its own.
      *
      * @param event the alert; must not be null
      * @throws NullPointerException  if {@code event} is null
