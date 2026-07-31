@@ -4,7 +4,7 @@ A monitoring system that ingests live power readings from simulated smart meters
 per household appliance, persists them, evaluates them for power-quality problems in real
 time, and presents both the live stream and historical trends to an operator. A separate
 Python module mines the accumulated history for peak-hour demand, per-device usage trends,
-and time-of-use cost.
+and time-of-use cost
 
 This repository is the course project for **Advanced Programming Practice (APP)**. The
 system is deliberately built to exercise, in one coherent application, all five
