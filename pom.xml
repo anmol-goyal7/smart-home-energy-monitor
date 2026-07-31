@@ -29,6 +29,17 @@
         <simulator.mainClass>com.smarthome.energy.simulator.SimulatorLauncher</simulator.mainClass>
         <dashboard.mainClass>com.smarthome.energy.client.DashboardApp</dashboard.mainClass>
         <persistence.mainClass>com.smarthome.energy.db.PersistenceDemo</persistence.mainClass>
+
+        <!--
+            What a bare `mvn exec:java` runs. This is a property rather than a literal in the
+            plugin's <configuration> because a value written there wins over the command line:
+            exec:java's mainClass parameter defaults to the `exec.mainClass` property, but an
+            explicit <mainClass> in the POM overrides that default, and `-Dexec.mainClass=…`
+            is then silently ignored — every invocation runs the server, whatever class was
+            asked for. Naming the property here instead means the command line overrides it,
+            because a -D on the command line beats a POM property.
+        -->
+        <exec.mainClass>${server.mainClass}</exec.mainClass>
     </properties>
 
     <dependencies>
@@ -78,13 +89,17 @@
                   mvn exec:java -Dexec.mainClass=${dashboard.mainClass}
                   mvn exec:java -Dexec.mainClass=${persistence.mainClass}
                 The server main is the default so a bare `mvn exec:java` starts the server.
+
+                mainClass reads the exec.mainClass property rather than naming a class
+                directly — see the property's own comment for why writing it here would make
+                every one of the commands above silently start the server.
             -->
             <plugin>
                 <groupId>org.codehaus.mojo</groupId>
                 <artifactId>exec-maven-plugin</artifactId>
                 <version>3.5.0</version>
                 <configuration>
-                    <mainClass>${server.mainClass}</mainClass>
+                    <mainClass>${exec.mainClass}</mainClass>
                 </configuration>
             </plugin>
         </plugins>
