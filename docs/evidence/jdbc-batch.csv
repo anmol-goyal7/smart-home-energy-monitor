@@ -1,0 +1,4 @@
+strategy,rows,seconds,rows_per_second
+"Autocommit, one INSERT per row",50000,248.775,201.0
+"PreparedStatement, batched (500)",50000,5.617,8900.8
+"Batched + pooled connection",50000,4.831,10350.6

@@ -86,6 +86,15 @@ public final class LiveFeedClient {
          * @param detail    a short human-readable explanation
          */
         void connectionStateChanged(boolean connected, String detail);
+
+        /**
+         * @param reply the server's answer to a {@link #sendCommand(String)} — either
+         *              {@link MeterMessage#RELOAD_ACK} or a line beginning
+         *              {@link MeterMessage#ERROR_PREFIX}; called on the feed's own thread
+         */
+        default void commandReplyReceived(String reply) {
+            // A listener that sends no commands has no replies to care about.
+        }
     }
 
     private final String host;
@@ -96,6 +105,8 @@ public final class LiveFeedClient {
 
     private volatile boolean running;
     private volatile Socket socket;
+    private volatile Writer commandWriter;
+    private final Object commandLock = new Object();
     private Thread thread;
     private long receivedCount;
     private long alertCount;
@@ -164,6 +175,43 @@ public final class LiveFeedClient {
         return host + ":" + port;
     }
 
+    /**
+     * Sends a command up the subscribed connection.
+     *
+     * <p>The only command the server understands is {@link MeterMessage#RELOAD_COMMAND}, sent
+     * by the threshold editor once its commit has gone through. The reply arrives
+     * asynchronously as an ordinary line on the feed, so this method reports only whether the
+     * command was written, not whether it worked — {@link Listener#commandReplyReceived} is
+     * where the answer turns up.</p>
+     *
+     * <p>Safe to call from any thread, including the event dispatch thread: the write is a
+     * few bytes into a socket buffer that the server is actively draining. It is not a
+     * database round trip, which is the thing the EDT must never wait on.</p>
+     *
+     * @param command the command line, without a terminator; must not be null
+     * @return true if it was written, false if the feed is not currently connected
+     * @throws NullPointerException if {@code command} is null
+     */
+    public boolean sendCommand(String command) {
+        Objects.requireNonNull(command, "command");
+        Writer out = commandWriter;
+        if (out == null) {
+            return false;
+        }
+        // Two editors committing at once would otherwise interleave their bytes into one
+        // unparseable line.
+        synchronized (commandLock) {
+            try {
+                out.write(command);
+                out.write(MeterMessage.TERMINATOR);
+                out.flush();
+                return true;
+            } catch (IOException e) {
+                return false;
+            }
+        }
+    }
+
     /** Connects, streams, and reconnects with backoff until stopped. */
     private void connectLoop() {
         long backoff = RETRY_BASE_MS;
@@ -182,6 +230,7 @@ public final class LiveFeedClient {
                     // backoff below and spin on a server that keeps answering wrongly.
                     if (subscribe(in, out)) {
                         backoff = RETRY_BASE_MS;
+                        commandWriter = out;
                         listener.connectionStateChanged(true, "subscribed to " + getEndpoint());
                         readFrames(in);
                     }
@@ -192,6 +241,8 @@ public final class LiveFeedClient {
                             + " (" + e.getMessage() + ")");
                 }
             } finally {
+                // Before the socket, so nothing can write into a stream that is closing.
+                commandWriter = null;
                 socket = null;
             }
 
@@ -228,6 +279,12 @@ public final class LiveFeedClient {
         while (running && (line = in.readLine()) != null) {
             if (MeterMessage.isAlertFrame(line)) {
                 readAlert(line);
+                continue;
+            }
+            // A command reply, not telemetry. Checked before the automaton because it is not
+            // in the meter grammar and would otherwise be counted as a malformed frame.
+            if (MeterMessage.RELOAD_ACK.equals(line) || line.startsWith(MeterMessage.ERROR_PREFIX)) {
+                listener.commandReplyReceived(line);
                 continue;
             }
             if (!validator.validateLine(line).isAccepted()) {

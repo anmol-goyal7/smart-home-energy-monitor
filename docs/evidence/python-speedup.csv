@@ -1,0 +1,5 @@
+mode,workers,seconds,speedup,units
+Serial,1,1.469,1.000,6
+multiprocessing.Pool,2,1.083,1.356,6
+multiprocessing.Pool,4,0.792,1.855,6
+multiprocessing.Pool,8,0.694,2.117,6

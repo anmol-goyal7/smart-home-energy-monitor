@@ -1,5 +1,6 @@
 package com.smarthome.energy.simulator;
 
+import com.smarthome.energy.model.Reading;
 import com.smarthome.energy.protocol.MeterMessage;
 
 import java.io.BufferedWriter;
@@ -9,9 +10,12 @@ import java.io.Writer;
 import java.net.InetSocketAddress;
 import java.net.Socket;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.time.Instant;
+import java.util.HashSet;
 import java.util.Objects;
 import java.util.Random;
+import java.util.Set;
 
 /**
  * Simulates one appliance's smart meter: a single TCP client that streams readings.
@@ -66,12 +70,17 @@ public final class MeterSimulator implements Runnable {
     private final double corruptionProbability;
     private final Random corruption;
 
+    private final Scenario scenario;
+    private final Instant scenarioStart;
+    private final Set<Integer> firedOneShots = new HashSet<>();
+
     private volatile boolean running = true;
     private volatile Socket socket;
 
     private long sentCount;
     private long anomalyCount;
     private long corruptedCount;
+    private long scriptedCount;
 
     /**
      * @param profile               the appliance to model; must not be null
@@ -87,6 +96,37 @@ public final class MeterSimulator implements Runnable {
      */
     public MeterSimulator(ApplianceProfile profile, String host, int port, long intervalMillis,
                           WaveformGenerator generator, double corruptionProbability, long seed) {
+        this(profile, host, port, intervalMillis, generator, corruptionProbability, seed, null, null);
+    }
+
+    /**
+     * Creates a meter that replays a scripted scenario over its generated waveform.
+     *
+     * @param profile               the appliance to model; must not be null
+     * @param host                  server host; must not be null
+     * @param port                  the server's meter ingest port
+     * @param intervalMillis        milliseconds between readings; must be positive
+     * @param generator             source of sample values; must not be null
+     * @param corruptionProbability probability in {@code [0,1]} that a frame is deliberately
+     *                              damaged before being sent, on top of anything the scenario
+     *                              scripts
+     * @param seed                  seed for the corruption draw, so a run is reproducible
+     * @param scenario              the timeline to replay, or null to stream freely
+     * @param scenarioStart         the instant the replay began — shared by every meter in the
+     *                              fleet so they stay in step; required when a scenario is given
+     * @throws NullPointerException     if a required reference argument is null
+     * @throws IllegalArgumentException if the interval or the probability is out of range, or a
+     *                                  scenario was given without a start instant
+     */
+    public MeterSimulator(ApplianceProfile profile, String host, int port, long intervalMillis,
+                          WaveformGenerator generator, double corruptionProbability, long seed,
+                          Scenario scenario, Instant scenarioStart) {
+        if (scenario != null && scenarioStart == null) {
+            throw new IllegalArgumentException("a scenario needs a start instant shared across the "
+                    + "fleet, or the meters would each begin their own replay");
+        }
+        this.scenario = scenario;
+        this.scenarioStart = scenarioStart;
         if (intervalMillis <= 0) {
             throw new IllegalArgumentException("intervalMillis must be positive, was " + intervalMillis);
         }
@@ -121,6 +161,11 @@ public final class MeterSimulator implements Runnable {
     /** @return frames deliberately damaged before being sent. */
     public long getCorruptedCount() {
         return corruptedCount;
+    }
+
+    /** @return frames whose values a scenario step overrode. */
+    public long getScriptedCount() {
+        return scriptedCount;
     }
 
     /** Stops the stream and closes the connection. */
@@ -183,10 +228,17 @@ public final class MeterSimulator implements Runnable {
         long nextTickMillis = System.currentTimeMillis();
         while (running) {
             Instant now = Instant.now();
-            WaveformGenerator.Sample sample = generator.next(profile, now);
-            String frame = MeterMessage.format(sample.reading());
+            if (scenarioFinished(now)) {
+                System.out.println("[" + label() + "] scenario '" + scenario.getName()
+                        + "' complete");
+                return;
+            }
 
-            if (shouldCorrupt()) {
+            WaveformGenerator.Sample sample = generator.next(profile, now);
+            Reading reading = applyScenario(sample.reading(), now);
+            String frame = MeterMessage.format(reading);
+
+            if (shouldCorrupt() || scenarioCorruptsNow(now)) {
                 frame = corrupt(frame);
                 corruptedCount++;
             }
@@ -214,6 +266,70 @@ public final class MeterSimulator implements Runnable {
 
     private boolean shouldCorrupt() {
         return corruptionProbability > 0.0 && corruption.nextDouble() < corruptionProbability;
+    }
+
+    /** @return true once the replay has run its full length, so the meter should stop. */
+    private boolean scenarioFinished(Instant now) {
+        return scenario != null
+                && Duration.between(scenarioStart, now).compareTo(scenario.getDuration()) > 0;
+    }
+
+    /**
+     * Applies whatever the scenario has in force for this meter, if anything.
+     *
+     * <p>An overridden voltage or power is not simply substituted into the reading: current is
+     * recomputed as {@code P/V} so the three fields stay physically consistent. A scripted
+     * fault whose {@code V x I} did not equal its {@code P} would be the one reading on the
+     * dashboard that could not have come from a real meter, and it would be the one an
+     * evaluator looked at closely.</p>
+     */
+    private Reading applyScenario(Reading generated, Instant now) {
+        if (scenario == null) {
+            return generated;
+        }
+        Scenario.Step step = scenario.sustainedStepFor(profile.getDeviceId(),
+                Duration.between(scenarioStart, now));
+        if (step == null) {
+            return generated;
+        }
+
+        double voltage = generated.getVoltage();
+        double power = generated.getPowerWatts();
+        switch (step.kind()) {
+            case VOLTAGE -> voltage = step.value();
+            case POWER -> power = step.value();
+            case NOMINAL, CORRUPT -> {
+                return generated;
+            }
+        }
+        scriptedCount++;
+        double current = round(power / voltage);
+        return Reading.fromEpochMillis(profile.getDeviceId(), generated.getReadingEpochMillis(),
+                round(voltage), current, round(power));
+    }
+
+    /**
+     * @return true if a one-shot corruption step has come due for this meter and has not
+     *         already fired
+     */
+    private boolean scenarioCorruptsNow(Instant now) {
+        if (scenario == null) {
+            return false;
+        }
+        for (int index : scenario.dueOneShots(profile.getDeviceId(),
+                Duration.between(scenarioStart, now))) {
+            if (firedOneShots.add(index)) {
+                System.out.println("[" + label() + "] scripted: "
+                        + scenario.getSteps().get(index).description());
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** Rounds to the two decimals the wire format carries, as the generator does. */
+    private static double round(double value) {
+        return Math.round(value * 100.0) / 100.0;
     }
 
     /**

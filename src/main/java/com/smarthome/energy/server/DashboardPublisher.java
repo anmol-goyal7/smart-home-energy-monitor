@@ -56,6 +56,27 @@ import java.util.concurrent.atomic.AtomicLong;
  */
 public final class DashboardPublisher implements AutoCloseable {
 
+    /**
+     * Handles a command a subscribed dashboard sent back up the feed.
+     *
+     * <p>The feed is a broadcast channel in all but one respect: the threshold editor needs to
+     * tell the server that the {@code thresholds} table has changed. Rather than open a second
+     * port for one word, the connection the dashboard already has becomes bidirectional after
+     * the handshake, and this is what the server plugs into it.</p>
+     */
+    @FunctionalInterface
+    public interface CommandHandler {
+
+        /**
+         * Carries out one command.
+         *
+         * @param command the line the dashboard sent, trimmed; never null
+         * @return the line to answer with — {@link MeterMessage#RELOAD_ACK}, or something
+         *         beginning {@link MeterMessage#ERROR_PREFIX} if the command failed
+         */
+        String handle(String command);
+    }
+
     /** Frames buffered for one subscriber before its slowness starts costing it readings. */
     public static final int DEFAULT_SUBSCRIBER_QUEUE = 500;
 
@@ -74,6 +95,7 @@ public final class DashboardPublisher implements AutoCloseable {
     private final AtomicLong droppedFrames = new AtomicLong();
 
     private volatile boolean running;
+    private volatile CommandHandler commandHandler;
     private ServerSocket listener;
     private Thread acceptThread;
 
@@ -161,6 +183,18 @@ public final class DashboardPublisher implements AutoCloseable {
             subscriber.offer(frame);
         }
         publishedAlerts.incrementAndGet();
+    }
+
+    /**
+     * Installs what happens when a subscribed dashboard sends a command.
+     *
+     * <p>Without one, commands are answered with an error rather than ignored: a threshold
+     * editor whose commit silently did nothing is worse than one that says it could not.</p>
+     *
+     * @param commandHandler the handler, or null to refuse commands again
+     */
+    public void setCommandHandler(CommandHandler commandHandler) {
+        this.commandHandler = commandHandler;
     }
 
     /** @return how many dashboards are currently subscribed. */
@@ -287,10 +321,19 @@ public final class DashboardPublisher implements AutoCloseable {
                 subscribers.add(this);
                 System.out.println("[publisher] " + name + " subscribed ("
                         + subscribers.size() + " subscriber(s))");
+
+                // The commands a dashboard may send are read on their own thread: this one is
+                // about to block in pump(), and a socket cannot be read by the thread that is
+                // parked writing to it.
+                Thread commands = new Thread(() -> readCommands(in), thread.getName() + "-cmd");
+                commands.setDaemon(true);
+                commands.start();
+
                 try {
                     pump(out);
                 } finally {
                     subscribers.remove(this);
+                    commands.interrupt();
                     System.out.println("[publisher] " + name + " disconnected ("
                             + subscribers.size() + " subscriber(s))");
                 }
@@ -325,6 +368,45 @@ public final class DashboardPublisher implements AutoCloseable {
             out.write(MeterMessage.TERMINATOR);
             out.flush();
             return true;
+        }
+
+        /**
+         * Reads command lines from a subscribed dashboard until the connection ends.
+         *
+         * <p>The reply goes back through the outbox rather than straight to the socket, so
+         * that this thread and the pump thread never write to the same stream at once. It
+         * therefore obeys the same drop-when-behind rule as everything else on the feed: a
+         * dashboard far enough behind to be losing readings may lose its acknowledgement too,
+         * and will report the reload as unconfirmed rather than as done.</p>
+         */
+        private void readCommands(BufferedReader in) {
+            try {
+                String line;
+                while (connected && running && (line = in.readLine()) != null) {
+                    String command = line.trim();
+                    if (command.isEmpty()) {
+                        continue;
+                    }
+                    CommandHandler handler = commandHandler;
+                    String reply;
+                    if (handler == null) {
+                        reply = MeterMessage.ERROR_PREFIX + "this server accepts no commands "
+                                + "(it is running without persistence, so it has no thresholds "
+                                + "to reload)";
+                    } else {
+                        try {
+                            reply = handler.handle(command);
+                        } catch (RuntimeException e) {
+                            reply = MeterMessage.ERROR_PREFIX + e.getMessage();
+                        }
+                    }
+                    System.out.println("[publisher] " + name + " sent '" + command + "' -> " + reply);
+                    offer(reply + MeterMessage.TERMINATOR);
+                }
+            } catch (IOException e) {
+                // The connection went away; the pump thread notices the same thing and both
+                // ends of the subscriber are torn down there.
+            }
         }
 
         /** Drains the outbox into the socket until the publisher stops or the write fails. */

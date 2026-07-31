@@ -1,0 +1,25 @@
+step
+--- how much history is being planned over ---
+total_readings	devices	earliest	latest
+112918	6	2026-07-31 04:26:30.159	2026-07-31 10:52:36.649
+step
+--- rows the query should return ---
+matching_rows
+899
+step
+--- 1. WITH the composite (device_id, reading_ts) index ---
+id	select_type	table	partitions	type	possible_keys	key	key_len	ref	rows	filtered	Extra
+1	SIMPLE	readings	NULL	range	idx_readings_device_ts	idx_readings_device_ts	11	NULL	899	100.00	Using index condition
+EXPLAIN
+-> Index range scan on readings using idx_readings_device_ts over (device_id = 3 AND '2026-07-31 10:37:42.000' <= reading_ts), with index condition: ((readings.device_id = 3) and (readings.reading_ts >= <cache>((now() - interval 15 minute))))  (cost=405 rows=899)\n
+step
+--- 2. WITHOUT it (only the single-column index the foreign key requires) ---
+id	select_type	table	partitions	type	possible_keys	key	key_len	ref	rows	filtered	Extra
+1	SIMPLE	readings	NULL	ref	idx_tmp_device_only	idx_tmp_device_only	4	const	36240	33.33	Using where; Using filesort
+EXPLAIN
+-> Sort: readings.reading_ts  (cost=1521 rows=36240)\n    -> Filter: (readings.reading_ts >= <cache>((now() - interval 15 minute)))  (cost=1521 rows=36240)\n        -> Index lookup on readings using idx_tmp_device_only (device_id=3)  (cost=1521 rows=36240)\n
+step
+--- 3. restoring the schema ---
+Table	Non_unique	Key_name	Seq_in_index	Column_name	Collation	Cardinality	Sub_part	Packed	Null	Index_type	Comment	Index_comment	Visible	Expression
+readings	1	idx_readings_device_ts	1	device_id	A	5	NULL	NULL		BTREE			YES	NULL
+readings	1	idx_readings_device_ts	2	reading_ts	A	93114	NULL	NULL		BTREE			YES	NULL

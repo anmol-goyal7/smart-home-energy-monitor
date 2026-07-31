@@ -3,6 +3,7 @@ package com.smarthome.energy.client.model;
 import com.smarthome.energy.model.Device;
 import com.smarthome.energy.model.Event;
 import com.smarthome.energy.model.Reading;
+import com.smarthome.energy.model.Threshold;
 
 import javax.swing.SwingUtilities;
 import java.util.ArrayList;
@@ -93,6 +94,13 @@ public final class DashboardModel {
         default void statusChanged(String message) {
             // Not interested by default.
         }
+
+        /**
+         * @param thresholds the detection limits as they currently stand in the database
+         */
+        default void thresholdsChanged(List<Threshold> thresholds) {
+            // Not interested by default.
+        }
     }
 
     // Keyed in device-id order, not insertion order: without a catalogue the appliances appear
@@ -103,6 +111,7 @@ public final class DashboardModel {
     private final List<Listener> listeners = new CopyOnWriteArrayList<>();
 
     private List<Reading> history = List.of();
+    private List<Threshold> thresholds = List.of();
     private int historyDeviceId;
     private boolean connected;
     private String connectionDetail = "not connected";
@@ -243,6 +252,25 @@ public final class DashboardModel {
         this.historyDeviceId = deviceId;
         this.history = List.copyOf(Objects.requireNonNull(readings, "readings"));
         listeners.forEach(listener -> listener.historyChanged(deviceId, history));
+    }
+
+    /**
+     * Replaces the detection thresholds shown by the threshold editor.
+     *
+     * @param loaded the thresholds as read from the database; must not be null
+     * @throws NullPointerException  if {@code loaded} is null
+     * @throws IllegalStateException if called off the event dispatch thread
+     */
+    public void setThresholds(List<Threshold> loaded) {
+        requireEventDispatchThread();
+        this.thresholds = List.copyOf(Objects.requireNonNull(loaded, "loaded"));
+        List<Threshold> snapshot = thresholds;
+        listeners.forEach(listener -> listener.thresholdsChanged(snapshot));
+    }
+
+    /** @return the detection thresholds as last read from the database. */
+    public List<Threshold> getThresholds() {
+        return thresholds;
     }
 
     /**

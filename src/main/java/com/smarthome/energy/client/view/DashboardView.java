@@ -5,6 +5,8 @@ import com.smarthome.energy.client.model.ApplianceState;
 import com.smarthome.energy.client.model.DashboardModel;
 import com.smarthome.energy.model.Event;
 import com.smarthome.energy.model.Reading;
+import com.smarthome.energy.model.Threshold;
+import com.smarthome.energy.protocol.MeterMessage;
 
 import javax.swing.BorderFactory;
 import javax.swing.Box;
@@ -112,6 +114,9 @@ public final class DashboardView implements DashboardModel.Listener {
     private final JSplitPane bodySplit = new JSplitPane(JSplitPane.VERTICAL_SPLIT);
     private final HistoryChartPanel historyChart = new HistoryChartPanel();
     private final EventLogPanel eventLog = new EventLogPanel();
+    private final LiveChartPanel liveChart = new LiveChartPanel();
+    private final DfaStatePanel dfaState = new DfaStatePanel();
+    private final ThresholdEditorPanel thresholdEditor;
 
     private final JLabel connectionLabel = new JLabel("connecting…");
     private final JLabel statusLabel = new JLabel(" ");
@@ -132,6 +137,7 @@ public final class DashboardView implements DashboardModel.Listener {
     public DashboardView(DashboardModel model, DashboardController controller) {
         this.model = Objects.requireNonNull(model, "model");
         this.controller = Objects.requireNonNull(controller, "controller");
+        this.thresholdEditor = new ThresholdEditorPanel(controller);
         build();
         model.addListener(this);
     }
@@ -196,6 +202,9 @@ public final class DashboardView implements DashboardModel.Listener {
         frame.setVisible(true);
         new Timer(TICK_MS, e -> {
             tiles.forEach(JComponent::repaint);
+            // The strip chart is sampled from the same tick, so its x-axis is a clock rather
+            // than a record of when six meters happened to report.
+            liveChart.sample(model.getAppliances());
             updateCounts();
         }).start();
     }
@@ -260,8 +269,11 @@ public final class DashboardView implements DashboardModel.Listener {
         JTabbedPane tabs = new JTabbedPane();
         tabs.setBackground(BACKGROUND);
         tabs.setForeground(TEXT);
+        tabs.addTab("Live", liveChart);
         tabs.addTab("History", buildHistoryTab());
         tabs.addTab("Alerts", eventLog);
+        tabs.addTab("Thresholds", thresholdEditor);
+        tabs.addTab("Automaton", dfaState);
 
         bodySplit.setTopComponent(grid);
         bodySplit.setBottomComponent(tabs);
@@ -345,6 +357,10 @@ public final class DashboardView implements DashboardModel.Listener {
             historyChart.setEmpty("running without a database — history is unavailable");
             eventLog.showEmptyMessage("running without a database — alerts are unavailable");
         }
+        if (!controller.canEditThresholds()) {
+            thresholdEditor.showDisabled("running without a database — the detection thresholds "
+                    + "live in MySQL and cannot be read or edited");
+        }
         return tab;
     }
 
@@ -373,6 +389,13 @@ public final class DashboardView implements DashboardModel.Listener {
 
     @Override
     public void applianceUpdated(ApplianceState state) {
+        // Re-encoding the reading gives the automaton panel the exact bytes that crossed the
+        // wire, without a second channel carrying raw frames up from the feed client.
+        Reading latest = state.getLatest();
+        if (latest != null) {
+            dfaState.setLiveFrame(MeterMessage.format(latest));
+        }
+
         for (AppliancePanel tile : tiles) {
             if (tile.getState().getDeviceId() == state.getDeviceId()) {
                 tile.repaint();
@@ -381,6 +404,15 @@ public final class DashboardView implements DashboardModel.Listener {
         }
         // A device that arrived on the feed without a tile: rebuild rather than guess.
         appliancesReset(model.getAppliances());
+    }
+
+    @Override
+    public void thresholdsChanged(List<Threshold> thresholds) {
+        Map<Integer, String> names = new LinkedHashMap<>();
+        for (ApplianceState state : model.getAppliances()) {
+            names.put(state.getDeviceId(), state.getName());
+        }
+        thresholdEditor.setThresholds(thresholds, names);
     }
 
     @Override

@@ -1,0 +1,21 @@
+[bench] JDBC insert benchmark: rows=50000 batch=500 pool=4 device=1
+[bench] target jdbc:mysql://localhost:3306/smart_home_energy?serverTimezone=UTC&sslMode=DISABLED&allowPublicKeyRetrieval=true
+[bench] Autocommit, one INSERT per row …
+[bench]   50,000 rows in 248.78 s (201 rows/s)
+[bench] cleaned up 50,000 benchmark row(s)
+[bench] PreparedStatement, batched (500) …
+[bench]   50,000 rows in 5.62 s (8,901 rows/s)
+[bench] cleaned up 50,000 benchmark row(s)
+[bench] Batched + pooled connection …
+[bench]   50,000 rows in 4.83 s (10,351 rows/s)
+[bench] cleaned up 50,000 benchmark row(s)
+
+| Strategy | Rows | Wall clock (s) | Rows/s |
+| -------- | ---- | -------------- | ------ |
+| Autocommit, one INSERT per row | 50,000 | 248.78 | 201 |
+| PreparedStatement, batched (500) | 50,000 | 5.62 | 8,901 |
+| Batched + pooled connection | 50,000 | 4.83 | 10,351 |
+
+  PreparedStatement, batched (500) is 44.3x the baseline
+  Batched + pooled connection is 51.5x the baseline
+[bench] wrote 3 row(s) to /home/anmol/repos/smart-home-energy-monitor/bench-results/jdbc-batch.csv

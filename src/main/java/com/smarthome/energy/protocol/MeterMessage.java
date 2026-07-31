@@ -114,6 +114,28 @@ public final class MeterMessage {
     public static final String SUBSCRIBE_ACK = "OK";
 
     /**
+     * Line a dashboard sends after subscribing to make the server re-read its thresholds.
+     *
+     * <p>The threshold editor commits to the {@code thresholds} table over its own JDBC
+     * connection, which the server has no way of noticing: its {@code RuleContext} was loaded
+     * at start-up and is only replaced when something replaces it. This command is what
+     * replaces it. The alternative — having the server poll the table — would mean an edit
+     * takes effect at some point in the next polling interval, and a demonstration whose
+     * result arrives "within thirty seconds" is not one anybody can point at.</p>
+     *
+     * <p>It carries no payload: the dashboard has already written the new limits, so the
+     * server needs only to be told to look. That keeps the command channel a single word and
+     * leaves the thresholds themselves with exactly one representation, the table.</p>
+     */
+    public static final String RELOAD_COMMAND = "RELOAD";
+
+    /** Line the server answers a successful {@link #RELOAD_COMMAND} with. */
+    public static final String RELOAD_ACK = "RELOADED";
+
+    /** Prefix of the line the server answers a command it could not carry out with. */
+    public static final String ERROR_PREFIX = "ERR ";
+
+    /**
      * Format applied to one decimal field, pinned to {@link Locale#ROOT} on purpose: under a
      * locale such as {@code fr-FR} the default would render {@code 228,40}, which the grammar
      * does not accept — so every meter would be rejected on a machine configured for that

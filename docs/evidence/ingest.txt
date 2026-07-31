@@ -1,0 +1,32 @@
+[bench] ingest benchmark: meters=[10, 50, 200] strategies=[thread-per-client, pool:8] interval=100ms warmup=5000ms window=60000ms
+[bench] each meter offers 10.0 readings/s
+[bench] running 10 meter(s) through thread-per-client …
+[bench]   thread-per-client: 100 readings/s delivered (100 offered), p50=0ms p99=2ms, peak threads 10, 10/10 meters actually read
+[bench] running 10 meter(s) through pool:8 …
+[bench]   pool(8): 80 readings/s delivered (100 offered), p50=0ms p99=1ms, peak threads 8, 8/10 meters actually read
+[bench] running 50 meter(s) through thread-per-client …
+[bench]   thread-per-client: 500 readings/s delivered (500 offered), p50=0ms p99=1ms, peak threads 50, 50/50 meters actually read
+[bench] running 50 meter(s) through pool:8 …
+[bench]   pool(8): 80 readings/s delivered (500 offered), p50=0ms p99=1ms, peak threads 8, 8/50 meters actually read
+[bench] running 200 meter(s) through thread-per-client …
+[bench]   thread-per-client: 2000 readings/s delivered (2000 offered), p50=0ms p99=1ms, peak threads 200, 200/200 meters actually read
+[bench] running 200 meter(s) through pool:8 …
+[bench]   pool(8): 80 readings/s delivered (2000 offered), p50=0ms p99=1ms, peak threads 8, 8/200 meters actually read
+
+| Meters | Strategy | Throughput (readings/s) | p50 latency (ms) | p99 latency (ms) | Peak threads |
+| ------ | -------- | ----------------------- | ---------------- | ---------------- | ------------ |
+| 10 | thread-per-client | 100 | 0 | 2 | 10 |
+| 10 | pool(8) | 80 | 0 | 1 | 8 |
+| 50 | thread-per-client | 500 | 0 | 1 | 50 |
+| 50 | pool(8) | 80 | 0 | 1 | 8 |
+| 200 | thread-per-client | 2,000 | 0 | 1 | 200 |
+| 200 | pool(8) | 80 | 0 | 1 | 8 |
+
+Detail (offered rate, mean latency, meters actually read, drops):
+   10 meters thread-per-client  offered      100/s  delivered      100/s  mean   0.54 ms  served  10/10   dropped 0
+   10 meters pool(8)            offered      100/s  delivered       80/s  mean   0.39 ms  served   8/10   dropped 0
+   50 meters thread-per-client  offered      500/s  delivered      500/s  mean   0.22 ms  served  50/50   dropped 0
+   50 meters pool(8)            offered      500/s  delivered       80/s  mean   0.36 ms  served   8/50   dropped 0
+  200 meters thread-per-client  offered    2,000/s  delivered    2,000/s  mean   0.15 ms  served 200/200  dropped 0
+  200 meters pool(8)            offered    2,000/s  delivered       80/s  mean   0.31 ms  served   8/200  dropped 0
+[bench] wrote 6 row(s) to /home/anmol/repos/smart-home-energy-monitor/bench-results/ingest.csv

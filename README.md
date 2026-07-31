@@ -10,17 +10,21 @@ This repository is the course project for **Advanced Programming Practice (APP)*
 system is deliberately built to exercise, in one coherent application, all five
 programming paradigms surveyed across the five units of the syllabus.
 
-> **Project status.** Phases 1–3 are implemented: the database layer; the live pipeline end
-> to end — meter simulators streaming over TCP, the validating DFA, the thread-per-client
-> server and its dispatcher, and the Swing dashboard showing the feed; and detection and
-> analytics — the rule engine raising spike, sag, and overload alerts into the dashboard and
-> the `events` table, and the Python multiprocessing analytics with its peak-hour report and
-> time-of-use cost model. **That is the graded core, running end to end.** The measured
-> evidence and the Layer 2 additions (Phase 4) are still to come, against the phased plan in
-> [Milestones](#milestones). Sections below describe the target system, and anything not yet
-> built says which phase it belongs to — the [Engineering evidence](#engineering-evidence)
-> tables are filled in as each measurement is actually taken, so an empty cell means "not yet
-> measured", never "assumed".
+> **Project status — complete.** All four phases are implemented: the database layer; the
+> live pipeline end to end — meter simulators streaming over TCP, the validating DFA, the
+> thread-per-client server and its dispatcher, and the Swing dashboard showing the feed;
+> detection and analytics — the rule engine raising spike, sag, and overload alerts into the
+> dashboard and the `events` table, and the Python multiprocessing analytics with its
+> peak-hour report and time-of-use cost model; and the Layer 2 additions — the three
+> remaining dashboard panels, the scripted demo scenario, the four failure-mode
+> demonstrations, and the four measurements in
+> [Engineering evidence](#engineering-evidence).
+>
+> Every number in the evidence tables was produced by running the harness named above it on
+> the machine described in [Measurement conditions](#measurement-conditions); none is
+> estimated. Two of them did not come out the way this document predicted, and both
+> predictions have been left in place next to the result — see
+> [Where the measurements contradicted the design](#where-the-measurements-contradicted-the-design).
 
 ---
 
@@ -556,7 +560,9 @@ it; the engine, the sink, and the ingest path are untouched.
 
 The `RuleContext` is **reloadable**: it is `volatile` and replaced wholesale, never mutated,
 so a worker mid-evaluation sees one consistent set of thresholds and the next reading picks
-up the edit. That is what the Phase 4 threshold editor commits into. Detection itself runs on
+up the edit. That is what the threshold editor commits into, over the live feed's `RELOAD`
+command — the dashboard writes to the `thresholds` table and then tells the server to rebuild
+its context, because the server has no other way of noticing. Detection itself runs on
 the dispatcher's worker rather than on the `ClientHandler` read loop, so a burst of anomalies
 cannot slow meter ingestion. The reasoning is expanded in [`docs/DESIGN.md`](docs/DESIGN.md).
 
@@ -578,9 +584,9 @@ dispatch thread via `SwingWorker`; only model-to-view updates touch the EDT.
 | `AppliancePanel` | One tile per appliance: live voltage, current, power, and a sparkline of recent load | Drawn entirely in `paintComponent` with `Graphics2D`; colour reflects the most severe active condition | built |
 | `HistoryChartPanel` | Per-device history over a selectable window, read over JDBC | Query runs on a `SwingWorker`, never on the EDT | built |
 | `EventLogPanel` | Running alert log, newest first, severity-coloured | Backfilled from `events` at start-up, then fed live by the publisher's alert channel | built |
-| `LiveChartPanel` | A scrolling strip chart of the last ~60 seconds of load across the home | Drawn directly in `paintComponent` with `Graphics2D` — no charting library | Layer 2, Phase 4 |
-| `ThresholdEditorPanel` | Editable per-device limits, committed through `ThresholdDao` | Writes to MySQL, then triggers a `RuleContext` reload | Layer 2, Phase 4 |
-| `DfaStatePanel` | The automaton's current state as characters stream in | Highlights the active row of the transition table; flashes the trap state on rejection | Layer 2, Phase 4 |
+| `LiveChartPanel` | A scrolling strip chart of the last 60 seconds of load across the home | Drawn directly in `paintComponent` with `Graphics2D` — no charting library. Sampled on a one-second timer rather than on arrival, so the x-axis is a clock and not a record of when six meters happened to report; a stale appliance drops out of the total | built |
+| `ThresholdEditorPanel` | Editable per-device limits, committed through `ThresholdDao` | Writes to MySQL, then sends `RELOAD` up the live feed so the server rebuilds its `RuleContext`. One row commits at a time, and a blank bound is `NULL` rather than zero | built |
+| `DfaStatePanel` | The automaton's current state as characters stream in | Steps the real `WireFormatValidator` one character at a time; highlights the active row of the transition table and flashes the trap state on rejection. The frame is editable, and "Corrupt one character" supplies the rejection the live feed never can | built |
 
 The live feed carries the same `RDG|…` frames the meters send, so the dashboard decodes it
 with the same `WireFormatValidator` and `MessageParser` the server uses on the way in — one
@@ -636,8 +642,9 @@ It is run offline (for the report and demos), independent of the Java processes.
 The `multiprocessing` step is the syllabus focus of Unit IV: the workload partitions cleanly
 by device, so it is a natural fit for a process pool. `benchmark.py` exists so the choice can
 be defended with a measured speedup rather than an assertion — the number lands in
-[Engineering evidence](#engineering-evidence). (`benchmark.py` arrives with Phase 4; the rest
-of the module is built.)
+[Evidence 4](#4-python-parallel-speedup). It also checks that the pooled run produced the same
+summaries as the serial one, because a speedup is only interesting if the fast answer is the
+same answer.
 
 Each module splits its fetching from its arithmetic — `analyze_device` opens the connection,
 `summarise` does the sums — so every analysis function is a pure function over rows. That is
@@ -671,14 +678,40 @@ ignored wholesale.
 
 The rubric grades to the Analyze/Evaluate level, so each significant design choice is backed
 by a measurement taken on this system rather than by assertion. These are the four
-experiments; each is reproducible with a single command, and the numbers below are filled in
-as each is run.
+experiments. Every number below was produced by the command shown above its table; each
+harness also writes a CSV, so these tables are transcribed from a run rather than retyped
+from a terminal. The unedited output of all four runs is kept in
+[`docs/evidence/`](docs/evidence/), so these tables can be checked rather than trusted.
+
+Two of the four did not come out the way this document predicted. The predictions have been
+left in place next to the results — see
+[Where the measurements contradicted the design](#where-the-measurements-contradicted-the-design).
+
+### Measurement conditions
+
+| | |
+| - | - |
+| CPU | 13th Gen Intel Core i5-13500H, 16 logical cores |
+| Memory | 15 GiB |
+| Storage | NVMe SSD |
+| OS | Arch Linux, kernel 7.1.2 |
+| JDK | OpenJDK 26.0.1 (the build targets 17) |
+| MySQL | 8.4.11, in the project's own Docker Compose container |
+| Python | 3.14.6 |
+| Stored history at measurement time | ~113,000 readings across 6 devices, ~950 events |
+
+Everything ran on one host, including the database. Nothing here measures behaviour across a
+real network — which is the one thing that would actually test the TCP-versus-UDP argument in
+[`docs/DESIGN.md`](docs/DESIGN.md).
 
 ### 1. Concurrency model — thread-per-client vs. thread pool
 
 `DESIGN.md` argues that thread-per-client is correct *at this project's scale*. The harness
-(`bench.IngestBenchmark`) drives N synthetic meters at a fixed rate through each accept
-strategy and records sustained throughput, latency percentiles, and peak thread count.
+(`bench.IngestBenchmark`) drives N synthetic meters at a fixed rate — 10 readings/s each —
+through each accept strategy and records sustained throughput, latency percentiles, and peak
+thread count. It stands up the real `ClientHandler` and the real `ReadingDispatcher` and
+terminates them in a counting sink, so every frame goes through the real DFA and parser
+without the database's latency confounding the comparison.
 
 ```bash
 mvn exec:java -Dexec.mainClass=com.smarthome.energy.bench.IngestBenchmark -Dexec.args="--meters 10,50,200 --duration 60s"
@@ -686,77 +719,234 @@ mvn exec:java -Dexec.mainClass=com.smarthome.energy.bench.IngestBenchmark -Dexec
 
 | Meters | Strategy | Throughput (readings/s) | p50 latency (ms) | p99 latency (ms) | Peak threads |
 | ------ | -------- | ----------------------- | ---------------- | ---------------- | ------------ |
-| 10 | thread-per-client | | | | |
-| 10 | pool (8) | | | | |
-| 50 | thread-per-client | | | | |
-| 50 | pool (8) | | | | |
-| 200 | thread-per-client | | | | |
-| 200 | pool (8) | | | | |
+| 10 | thread-per-client | 100 | 0 | 2 | 10 |
+| 10 | pool (8) | 80 | 0 | 1 | 8 |
+| 50 | thread-per-client | 500 | 0 | 1 | 50 |
+| 50 | pool (8) | 80 | 0 | 1 | 8 |
+| 200 | thread-per-client | 2,000 | 0 | 1 | 200 |
+| 200 | pool (8) | 80 | 0 | 1 | 8 |
 
-Expected shape of the result: indistinguishable at 10 meters, with the pool pulling ahead as
-the connection count grows. That is precisely the argument — the simpler model is chosen
-because the measurement shows it costs nothing *here*, not because pools are bad.
+> **Predicted before running it:** *"indistinguishable at 10 meters, with the pool pulling
+> ahead as the connection count grows. That is precisely the argument — the simpler model is
+> chosen because the measurement shows it costs nothing here, not because pools are bad."*
+>
+> **Both halves of that are wrong.** The pool is behind at ten meters, not level with it, and
+> it falls further behind at every step rather than pulling ahead.
+
+Thread-per-client delivered every reading offered to it at all three sizes, including 2,000
+readings/s across 200 connections. The pool of eight delivered 80 readings/s at *every* size,
+which is exactly eight meters' worth — because eight is how many meters it was reading from:
+
+```
+   10 meters thread-per-client  offered   100/s  delivered   100/s  served  10/10
+   10 meters pool(8)            offered   100/s  delivered    80/s  served   8/10
+   50 meters thread-per-client  offered   500/s  delivered   500/s  served  50/50
+   50 meters pool(8)            offered   500/s  delivered    80/s  served   8/50
+  200 meters thread-per-client  offered 2,000/s  delivered 2,000/s  served 200/200
+  200 meters pool(8)            offered 2,000/s  delivered    80/s  served   8/200
+```
+
+A pool multiplexes many *short* tasks across few threads, because each task releases its
+thread promptly. A `ClientHandler` is the opposite: it blocks on a socket read for the whole
+life of the connection. Submitting it to a pool of eight therefore does not share eight
+threads among 200 meters — it means meters 9 through 200 sit in the queue, TCP-connected and
+never read from, until one of the first eight disconnects. **The pool bounds the thread count
+by bounding how many meters are served at all.**
+
+**The latency columns are a trap, and are printed anyway.** The pooled runs' p50 and p99 are
+as good as thread-per-client's or better. That is not the pool performing well — the readings
+that would have been late were never delivered, so they are absent from the distribution
+instead of in its tail. The honest column is "meters actually read", which is why the harness
+reports it. A benchmark that printed only the first six columns of the table above would have
+made the pool look competitive.
+
+The conclusion is narrower and more useful than the one this project started with: not
+"thread-per-client is acceptable at our scale", but **a pool is the wrong tool wherever a task
+holds its thread for the lifetime of a connection, at any scale**. The pool this system does
+have — the dispatcher's workers — is in the right place, because "deliver one reading" is a
+task that returns. Serving 200 connections would need non-blocking I/O, not a smaller number
+of blocking threads.
+
+*Caveat:* the load generators and the server share one JVM and the same cores, so the
+absolute throughput is capped by the harness. Both strategies pay that cost equally, so the
+comparison stands; the figures are "under this harness", not a capacity claim. Latency is
+measured to the millisecond because that is the resolution of the meter-side timestamp the
+wire format carries, so `p50 = 0` means "below what the protocol records" — the mean, which
+the harness also prints, ranged from 0.15 ms to 0.54 ms.
 
 ### 2. JDBC insert strategy
 
-`bench.JdbcBatchBenchmark` inserts a fixed number of readings three ways.
+`bench.JdbcBatchBenchmark` inserts 50,000 readings three ways. Each strategy differs from the
+one above it in exactly one respect, so the table reads as two isolated effects rather than
+one confounded comparison.
+
+```bash
+mvn exec:java -Dexec.mainClass=com.smarthome.energy.bench.JdbcBatchBenchmark -Dexec.args="--rows 50000"
+```
 
 | Strategy | Rows | Wall clock (s) | Rows/s |
 | -------- | ---- | -------------- | ------ |
-| Autocommit, one `INSERT` per row | 50,000 | | |
-| `PreparedStatement`, batched (500) | 50,000 | | |
-| Batched + pooled connection | 50,000 | | |
+| Autocommit, one `INSERT` per row | 50,000 | 248.78 | 201 |
+| `PreparedStatement`, batched (500) | 50,000 | 5.62 | 8,901 |
+| Batched + pooled connection | 50,000 | 4.83 | 10,351 |
+
+The baseline is not a straw man built to lose: it is exactly what `ReadingDao.insert(Reading)`
+does on every call and what `PersistenceSink` does for every reading that arrives — a fresh
+connection and an implicit transaction per row. At 201 rows/s against the six readings a
+second the fleet actually offers, it has about thirty times the headroom it needs, which is
+why the simple version is still in the system.
+
+The two deltas are worth more than the totals:
+
+- **Batching is worth 44×**, and almost all of it is the per-row commit — 50,000 durable
+  transactions against 100.
+- **Pooling is worth a further 16%**, which is a TCP handshake and a MySQL authentication
+  exchange amortised away per unit of work.
+
+That ordering says where the effort would go if this ever needed more throughput, and it says
+that a connection pool — the change people reach for first — is the smaller half of it.
+
+Every row the benchmark writes is stamped inside a sentinel window in the year 2000 and
+deleted afterwards, so 150,000 benchmark rows never distort the analytics or the index
+comparison.
 
 ### 3. Index effectiveness
 
-The dashboard's history query, planned with and without the `(device_id, reading_ts)` index:
+The dashboard's history query — one device, the last 15 minutes, in time order — planned with
+and without the composite index, over ~113,000 stored readings:
 
-```sql
-EXPLAIN SELECT * FROM readings
- WHERE device_id = 3 AND reading_ts BETWEEN ? AND ?
- ORDER BY reading_ts;
+```bash
+docker compose exec -T mysql mysql -u energy_app -pchange_me smart_home_energy < sql/explain_index.sql
 ```
 
 | Index present | `type` | `rows` examined | `Extra` |
 | ------------- | ------ | --------------- | ------- |
-| No | | | |
-| Yes | | | |
+| Yes — `(device_id, reading_ts)` | `range` | 899 | `Using index condition` |
+| No — `device_id` alone | `ref` | 36,240 | `Using where; Using filesort` |
+
+Forty times fewer rows examined, and no sort: with the composite index the range on
+`reading_ts` is served by the index itself, which also returns the rows already in
+`ORDER BY` order. Two details had to be got right for this to mean anything, and both are
+recorded in the script:
+
+**The index cannot simply be dropped.** `fk_readings_device` requires an index on
+`device_id`, and `idx_readings_device_ts` is currently the index satisfying that requirement,
+so `DROP INDEX` fails with error 1553. The script creates a single-column index on
+`device_id` first and removes it at the end. That makes the comparison the honest one anyway:
+"without the index" cannot mean "with no index on `device_id`", because the schema would
+never permit that. What is being measured is exactly what the *second column* buys.
+
+**The window matters, and an all-time window measures nothing.** Planned over
+`BETWEEN '2000-01-01' AND '2100-01-01'`, both plans come out as full table scans — selecting
+every row a device has genuinely is cheaper to scan than to seek 18,000 index entries and
+fetch each row. That is the optimiser being right, not the index being useless. The first
+version of this measurement used exactly that range and showed nothing; the query was
+corrected to the 15-minute window the dashboard actually defaults to.
 
 ### 4. Python parallel speedup
 
 ```bash
-python -m analytics.benchmark
+cd python && python -m analytics.benchmark
 ```
 
 | Mode | Workers | Wall clock (s) | Speedup |
 | ---- | ------- | -------------- | ------- |
-| Serial | 1 | | 1.00× |
-| `multiprocessing.Pool` | 2 | | |
-| `multiprocessing.Pool` | 4 | | |
-| `multiprocessing.Pool` | 8 | | |
+| Serial | 1 | 1.47 | 1.00× |
+| `multiprocessing.Pool` | 2 | 1.08 | 1.36× |
+| `multiprocessing.Pool` | 4 | 0.79 | 1.85× |
+| `multiprocessing.Pool` | 8 | 0.69 | 2.12× |
 
-The per-device analysis is IO-bound on the database, so the curve is expected to flatten once
-workers outnumber the connections the database will usefully serve in parallel — worth noting
-rather than hiding, since it is the honest reason the speedup is sub-linear.
+Real, and clearly flattening — which was predicted, for a reason that was only half right.
+The prediction was that the per-device analysis is IO-bound on the database, so the curve
+flattens once workers outnumber the connections MySQL will usefully serve in parallel. That
+is one of three caps, and probably not the binding one here:
+
+1. **There are only six devices.** Eight workers cannot beat six units of work, so the 4→8
+   step is measuring almost nothing but pool construction. `--repeat N` exists to give the
+   pool more work units than there are devices, for anyone who wants the curve without this
+   cap.
+2. **The work is IO-bound on MySQL**, so parallelising it overlaps waiting rather than
+   computation.
+3. **Pool construction is not free**, and on Python 3.14 it is less free than it was: the
+   default start method on Linux is now `forkserver` rather than `fork`, so every worker
+   re-imports the module. The benchmark times the whole operation, pool setup included,
+   because that is what the report pays on every run — timing `pool.map` alone would flatter
+   the parallel rows by hiding a cost the caller cannot avoid.
+
+**What this does and does not establish about the GIL.** The choice of `multiprocessing` over
+`threading` is usually justified by the GIL, and that argument holds — but this measurement
+is not what demonstrates it. An IO-bound workload releases the GIL while it waits, so threads
+would have parallelised this too. What the measurement establishes is that the parallelism is
+real and that its ceiling is the database, which is the honest finding rather than the
+flattering one.
+
+The benchmark also checks that the pooled run produced the same summaries as the serial one
+(`results agree with the serial baseline (6 summaries)`). A speedup is only interesting if
+the fast answer is the same answer, and those results cross a process boundary as a pickle on
+the way back.
+
+### Where the measurements contradicted the design
+
+Two of the four experiments refuted something this project believed. Both predictions are
+still in the sections above, next to the results, because a document that quietly edits its
+predictions to match its outcomes is not evidence of anything.
+
+| Belief | What the measurement showed | What changed |
+| ------ | --------------------------- | ------------ |
+| A thread pool would match thread-per-client at 10 meters and pull ahead as connections grow | The pool was behind at every size, and served only as many meters as it had threads | The argument for thread-per-client stopped being "we are small enough to get away with it" and became "a pool cannot help when the task holds its thread for the connection's lifetime". `AcceptStrategy`'s Javadoc and `docs/REPORT.md` §5.1 carry the corrected reasoning |
+| The Python speedup would be capped by database concurrency | It is, but the binding cap at this size is having only six devices to divide among eight workers | `--repeat` was added so the curve can be measured past that cap, and the three caps are now named separately rather than attributed to one cause |
+
+A third correction came out of building the evidence rather than running it: the scripted
+demo's threshold edit originally raised the refrigerator's ceiling to 520 W while the
+appliance drew 540, and the step cueing that edit would have dropped the load back to normal
+at the same moment. Either would have produced a demonstration that appeared to work and
+proved nothing. Both are now asserted by `ScenarioTest` — see
+[The scripted demo](#the-scripted-demo).
 
 ---
 
 ## Failure-mode demonstrations
 
-Four short, deliberately-broken paths are kept in the codebase behind flags, each paired with
-its corrected counterpart. They exist because demonstrating a failure is stronger evidence of
-understanding than asserting the fix was necessary, and each is a direct hit on a syllabus
-teaching point.
+Four short, deliberately-broken paths, each paired with its corrected counterpart. They exist
+because demonstrating a failure is stronger evidence of understanding than asserting the fix
+was necessary, and each is a direct hit on a syllabus teaching point.
 
 | Demonstration | Broken behaviour | Corrected behaviour | Unit |
 | ------------- | ---------------- | ------------------- | ---- |
-| **Lost update** | Dispatcher counters incremented without synchronisation under concurrent handlers; totals come out short | Synchronised / atomic counters; totals exact | I |
-| **Frozen UI** | The history query run directly on the event dispatch thread; the window stops repainting until it returns | The same query on a `SwingWorker`; the UI stays live | II |
+| **Lost update** | Dispatcher counters incremented without synchronisation under concurrent handlers; totals come out short | Atomic counters; totals exact | I |
+| **Frozen UI** | The query run directly on the event dispatch thread; the window stops repainting until it returns | The same query on a `SwingWorker`; the UI stays live | II |
 | **SQL injection** | A device-name lookup built by string concatenation, exploited against a throwaway table | The same lookup as a parameterised `PreparedStatement` | III |
 | **Partial write** | Reading committed, event insert then fails — leaving an orphaned reading | Both in one transaction; the failure rolls back cleanly | III |
 
-Each runs from the demo script (`scripts/demo.sh --failure <name>`) and prints the before and
-after side by side.
+Each runs from the demo script (`scripts/demo.sh --failure <name>`, or
+`FailureDemos --all`) and prints the before and after side by side. What they actually print:
+
+| Demonstration | Broken | Corrected |
+| ------------- | ------ | --------- |
+| Lost update (8 threads × 200,000 increments; correct total 1,600,000) | **666,167** — 933,833 increments lost, 58% of them | **1,600,000** — exact |
+| Frozen UI (a 3 s query, with a 50 ms timer ticking on the EDT) | longest gap between ticks **3,282 ms** — the window was dead for the whole query | longest gap **50 ms** — the timer's own interval |
+| SQL injection (input `no such device' OR '1'='1`, against a 6-row table) | **6 rows** returned — the entire table | **0 rows** — the whole string is one name, and nothing is called that |
+| Partial write (a reading, then an event that violates its foreign key) | **1 reading left behind** — an orphan whose alert was never recorded | **0** — the reading went back with the event |
+
+Three notes on what these do and do not show.
+
+**The lost-update figure is not stable, and that is the finding.** It is 58% on this machine
+on this run; it will be a different fraction on yours. A defect that loses a different number
+of updates every time is one no assertion catches, which is why the fix is structural rather
+than a test.
+
+**`SELECT SLEEP(3)` is not a query anybody would write.** The frozen-UI demonstration uses one
+because the point is not what a query costs but which thread pays for it, and a deliberately
+timed sleep makes the two runs comparable to the millisecond. The real `loadHistory` blocks
+the same thread for the same reason, just for a duration that depends on how much history
+happens to be stored.
+
+**The injection demonstration stops short of the famous version.** `'; DROP TABLE …` does not
+fire here, because Connector/J refuses multiple statements per `execute` unless
+`allowMultiQueries` is set, and this project's URL does not set it. Saying so is more honest
+than quietly demonstrating something weaker: the driver's default removes the spectacular
+consequence and leaves the ordinary one, which is that the attacker, not the programmer,
+decides what the `WHERE` clause means.
 
 ---
 
@@ -779,9 +969,22 @@ cp src/main/resources/db.properties.example src/main/resources/db.properties
 mvn clean package
 ```
 
-Then start the three processes in three terminals, as under
-[Manual setup](#manual-setup-no-docker) steps 4–6. (`scripts/demo.sh`, which starts them
-together and drives the scripted scenarios, arrives with Phase 4.)
+Then either start the three processes in three terminals, as under
+[Manual setup](#manual-setup-no-docker) steps 4–6, or let the demo script do all of it:
+
+```bash
+./scripts/demo.sh                      # database, server, simulators, dashboard
+./scripts/demo.sh --scenario incident  # the same, replaying the scripted three-minute fault
+./scripts/demo.sh --failure lost-update   # one failure-mode demonstration, then exit
+./scripts/demo.sh --list               # the scenarios and failure demonstrations
+./scripts/demo.sh --stop               # stop whatever it started
+```
+
+The script builds first, waits for MySQL's healthcheck rather than guessing with a `sleep`,
+waits for each port to accept before starting the process that connects to it, and records
+every process it starts so Ctrl-C — or `--stop` from another terminal — takes the whole stack
+down. It skips the Swing window when `DISPLAY` is unset instead of failing, so the same
+command works over SSH.
 
 `db.properties` is git-ignored so credentials never enter version control. The example file
 already matches the Docker Compose credentials, so no editing is needed for the default
@@ -833,13 +1036,11 @@ mvn exec:java -Dexec.mainClass=com.smarthome.energy.server.EnergyMonitorServer
 | `--meter-port N` | override the meter ingest port |
 | `--dashboard-port N` | override the live-feed port |
 | `--no-persistence` | run the live pipeline with no MySQL at all: readings are validated, dispatched, and broadcast to dashboards, but not stored. A diagnostic mode for working on the networking path — history, alerts, and the analytics have nothing to read without it |
+| `--accept STRATEGY` | how an accepted connection gets a thread: `thread-per-client` (the default), `pool`, or `pool:N`. Read [Evidence 1](#1-concurrency-model--thread-per-client-vs-thread-pool) before choosing anything but the default — the pool serves only as many meters as it has threads |
 
-The server prints a status line every ten seconds (`meters=6 subscribers=1 accepted=…
-delivered=… dropped=… queued=… rate=…/s`) and drains the dispatcher on shutdown.
-
-The swappable accept strategy (`--strategy pool --pool-size 8`) is a Layer 2 addition and
-arrives with Phase 4; until then the server is thread-per-client, as `DESIGN.md` argues it
-should be at this scale.
+The server prints a status line every ten seconds (`meters=6 threads=6/6 subscribers=1
+accepted=… delivered=… dropped=… queued=… rate=…/s`) and drains the dispatcher on shutdown.
+The `threads=` field is live/peak for the accept strategy in force.
 
 **5. Start the meter simulators** — in a second terminal:
 
@@ -902,17 +1103,37 @@ the simulators can replay a fixed scenario instead of generating purely random r
 ./scripts/demo.sh --scenario incident
 ```
 
-The `incident` scenario runs for about three minutes and is deterministic:
+The `incident` scenario runs for three minutes and is deterministic. `--list-scenarios` on
+the simulator prints the same running order, and so does the launcher before it starts, so an
+audience knows what to watch for:
 
 | Time | What happens | What to point at |
 | ---- | ------------ | ---------------- |
-| 0:00–0:45 | All appliances nominal | Live tiles and strip chart populating |
-| 0:45 | Deliberate malformed line injected | `DfaStatePanel` hits the trap state; the rejection logs its column |
-| 1:00 | HVAC voltage climbs to 264 V | `VOLTAGE_SPIKE`, CRITICAL, in the event log |
+| 0:00–0:45 | All appliances nominal | Live tiles and the strip chart populating |
+| 0:45 | Deliberate malformed line injected (device 3) | `DfaStatePanel` walks into the trap state; the server's rejection names the column |
+| 1:00 | HVAC voltage held at 264 V | `VOLTAGE_SPIKE`, CRITICAL, in the event log |
+| 1:20 | HVAC supply recovers | Its tile returns to green |
 | 1:30 | Supply sags to 196 V across all devices | Simultaneous `VOLTAGE_SAG` events on every device |
-| 2:00 | Refrigerator draws 540 W against a 500 W ceiling | `LOAD_OVERLOAD`, WARNING |
-| 2:20 | Threshold edited live in the dashboard to 520 W | Engine reloads; the next reading no longer alerts |
+| 1:50 | Supply recovers across the house | Every tile returns to green |
+| 2:00 | Refrigerator draws 540 W against a 500 W ceiling | `LOAD_OVERLOAD`, WARNING, once per reading |
+| 2:20 | **Cue:** raise device 1's `POWER` maximum to 560 in the Thresholds tab and commit | Engine reloads; the next reading no longer alerts |
 | 2:40 | All values return to nominal | Event log stops growing; tiles return to green |
+
+Two details of the timeline are load-bearing.
+
+**The 2:20 step changes nothing about the load.** It is a cue for the operator, not a
+scripted event — `Scenario.Kind.NOTE`, which the replay deliberately treats as neither
+applying nor clearing anything. A step that quietly dropped the refrigerator back to normal
+at the same moment would produce an identical screen whether the operator touched the editor
+or not, and the one thing this part of the demonstration exists to prove is that the edit is
+what stopped the alerts. The fridge is still drawing 540 W at 2:39.
+
+**The new ceiling is 560 W, not 520 W.** An earlier draft of this table said 520, which is
+below the 540 W the appliance is drawing — committing it would have reloaded the engine
+faithfully and carried on alerting, in front of the audience. The scenario now aims the
+overload and the edit either side of one number, and `ScenarioTest` asserts that every
+scripted fault actually crosses the limit it is meant to trip, so the next such slip fails
+the build instead of the demo.
 
 ### Tests
 
@@ -923,10 +1144,12 @@ mvn test -Dtest=WireFormatFuzzTest   # ~100k randomised DFA vs. regex comparison
 cd python && python -m unittest discover -s tests -t .   # the analytics suite
 ```
 
-123 Java tests and 33 Python tests at the end of Phase 3. The eight DAO round-trip tests skip
+157 Java tests and 33 Python tests at the end of Phase 4. The eight DAO round-trip tests skip
 themselves with a stated reason when no database is reachable, so the build stays green on a
-machine without Docker; everything else — the protocol, the dispatcher, the waveform
-generator, the rule engine, the dashboard model, and the analytics — runs anywhere.
+machine without Docker; everything else — the protocol, the dispatcher, the accept
+strategies, the waveform generator, the scenario timeline, the rule engine, the dashboard
+model and its strip chart, the benchmark's percentiles, and the analytics — runs anywhere,
+headless included.
 
 Two of those suites are worth a note, because "no database" would otherwise mean "not
 tested":
@@ -940,13 +1163,54 @@ tested":
 - The Python suite exercises the analysis functions, which take rows and return values, so it
   needs neither MySQL nor the MySQL driver installed.
 
+Phase 4 adds four suites, three of which exist because their subject is a claim this document
+makes:
+
+- `AcceptStrategyTest` opens real sockets on a loopback port and counts how many of them get
+  read from. That is the whole of [Evidence 1](#1-concurrency-model--thread-per-client-vs-thread-pool)
+  as an assertion: six meters through a pool of two, and exactly two are served. Mocking the
+  handler would have made both strategies look identical, because what differs between them
+  is a thread blocking on a real stream.
+- `ScenarioTest` asserts that every fault the `incident` scenario scripts actually crosses
+  the threshold it is aimed at, and that the threshold-edit cue leaves the overload running.
+  Both of those were wrong at some point while Phase 4 was being written, and neither is
+  visible by reading the timeline.
+- `LatencyRecorderTest` covers the percentile arithmetic behind Evidence 1's latency columns,
+  including that eight threads recording at once lose no samples. An off-by-one in a
+  percentile index produces a number that still looks like a latency.
+- `LiveChartPanelTest` covers the strip chart's totals and its staleness rule without a
+  display, by passing the instant to judge against rather than reading the clock.
+
 ### Benchmarks
 
 ```bash
-mvn exec:java -Dexec.mainClass=com.smarthome.energy.bench.IngestBenchmark
-mvn exec:java -Dexec.mainClass=com.smarthome.energy.bench.JdbcBatchBenchmark
-python -m analytics.benchmark
+mvn exec:java -Dexec.mainClass=com.smarthome.energy.bench.IngestBenchmark \
+    -Dexec.args="--meters 10,50,200 --duration 60s --csv bench-results/ingest.csv"
+mvn exec:java -Dexec.mainClass=com.smarthome.energy.bench.JdbcBatchBenchmark \
+    -Dexec.args="--rows 50000 --csv bench-results/jdbc-batch.csv"
+docker compose exec -T mysql mysql -u energy_app -pchange_me smart_home_energy \
+    < sql/explain_index.sql
+cd python && python -m analytics.benchmark --csv ../bench-results/python-speedup.csv
 ```
+
+Each writes a CSV as well as printing its table, so the numbers in
+[Engineering evidence](#engineering-evidence) are transcribed from a run rather than retyped
+from a terminal. The JDBC benchmark stamps every row it writes inside a sentinel time window
+in the year 2000 and deletes exactly that window afterwards, so half a million benchmark rows
+never end up distorting the analytics or the index comparison. `sql/explain_index.sql`
+likewise restores the index it drops.
+
+### Running the failure demonstrations
+
+```bash
+./scripts/demo.sh --failure lost-update      # or frozen-ui, sql-injection, partial-write
+mvn exec:java -Dexec.mainClass=com.smarthome.energy.demo.FailureDemos -Dexec.args="--all"
+```
+
+`lost-update` needs nothing; `sql-injection` and `partial-write` need MySQL; `frozen-ui`
+additionally needs a display, and says so rather than throwing a `HeadlessException` out of a
+script. Each writes only to its own throwaway table or its own sentinel time window and
+cleans up before it returns.
 
 ---
 
@@ -963,9 +1227,13 @@ smart-home-energy-monitor/
 │   └── demo.sh                     Starts the stack; runs scripted scenarios and failure demos
 ├── sql/                            Database scripts (load in order: schema, then seed)
 │   ├── schema.sql                  Database and table definitions
-│   └── seed.sql                    Seed devices and detection thresholds
+│   ├── seed.sql                    Seed devices and detection thresholds
+│   └── explain_index.sql           Evidence 3: the history query planned with and without
+│                                   the composite index, which it restores afterwards
 ├── docs/                           Report and design notes
-│   └── DESIGN.md                   Design-decision rationale (for the viva)
+│   ├── DESIGN.md                   Design-decision rationale (for the viva)
+│   ├── REPORT.md                   The design-thinking report, with the measured evidence
+│   └── evidence/                   Unedited output of the four measurement runs
 ├── python/                         Python analytics module root
 │   ├── requirements.txt            Analytics dependencies
 │   ├── analytics/                  The analytics package (multiprocessing)
@@ -975,7 +1243,8 @@ smart-home-energy-monitor/
 │   │   ├── peak_hours.py           Whole-home hour-of-day demand profile
 │   │   ├── cost_model.py           Time-of-use tariff, bill, and load-shift savings
 │   │   ├── runner.py               Orchestration and report rendering
-│   │   └── benchmark.py            Serial vs. Pool timing comparison (Phase 4)
+│   │   └── benchmark.py            Evidence 4: serial vs. Pool timing, and a check that
+│   │                               both produced the same summaries
 │   └── tests/                      Analytics unit tests (no database required)
 └── src/
     ├── main/
@@ -988,6 +1257,7 @@ smart-home-energy-monitor/
     │       ├── rules/              Rule-based power-quality detection engine
     │       ├── simulator/          Meter simulators (TCP clients) and scenario playback
     │       ├── bench/              Ingest and JDBC benchmark harnesses
+    │       ├── demo/               The four failure-mode demonstrations, broken beside fixed
     │       └── client/             Swing dashboard root (entry point + networking/data)
     │           ├── model/          MVC model: observable dashboard state
     │           ├── view/           MVC view: Swing window and panels
@@ -1012,10 +1282,12 @@ smart-home-energy-monitor/
   reloadable threshold context; alerts written with their reading in one transaction, and
   published to the dashboard as a second frame type on the live feed; the Python
   multiprocessing analytics, cost model, and peak-hour report. Completes the graded core.
-- **Phase 4 — Evidence and polish.** The Layer 2 additions: the benchmark harnesses and the
-  four [Engineering evidence](#engineering-evidence) measurements, the failure-mode
-  demonstrations, the remaining Layer 2 panels, the scripted demo scenario, and the
-  design-thinking report.
+- **Phase 4 — Evidence and polish. Done.** The Layer 2 additions: the swappable accept
+  strategy and the two Java benchmark harnesses; the four
+  [Engineering evidence](#engineering-evidence) measurements, all taken; the four
+  failure-mode demonstrations; the remaining three dashboard panels and the `RELOAD` command
+  the threshold editor needed; the scripted `incident` scenario and `scripts/demo.sh`; and
+  the design-thinking report in [`docs/REPORT.md`](docs/REPORT.md).
 
 The DFA fuzz comparison was originally listed under Phase 4. It moved forward to Phase 2:
 it is the evidence that the automaton recognises the right language, and the automaton is
@@ -1023,7 +1295,11 @@ what every reading in Phase 2 already passes through — deferring the check wou
 building three more phases on an unverified recogniser.
 
 Phases 1–3 are the graded core; Phase 4 is what supports the Analyze/Evaluate level of the
-rubric. Nothing in Phase 4 is started before Phase 3 runs end to end.
+rubric. Nothing in Phase 4 was started before Phase 3 ran end to end, and the order turned
+out to matter more than expected: Evidence 1 needed a second accept strategy that did not
+exist, and building one made a claim in `DESIGN.md` measurable for the first time — at which
+point it turned out to be [wrong in an interesting
+way](#where-the-measurements-contradicted-the-design).
 
 The report is framed as a design-thinking narrative — empathize, define, ideate, prototype,
 test — with the Phase 4 measurements supplying the "test" evidence.
@@ -1033,12 +1309,16 @@ test — with the Phase 4 measurements supplying the "test" evidence.
 ## Design questions and where they are answered
 
 The viva is design-justification heavy. Every significant choice in this system has a
-recorded rationale and, where a tradeoff is quantitative, a measurement behind it:
+recorded rationale and, where a tradeoff is quantitative, a measurement behind it.
+[`docs/DESIGN.md`](docs/DESIGN.md) holds the rationale decision by decision;
+[`docs/REPORT.md`](docs/REPORT.md) is the narrative — how the problem was framed, what was
+rejected, and what the evidence changed.
 
 | Question | Answered by |
 | -------- | ----------- |
 | Why TCP rather than UDP for the meter streams? | [`docs/DESIGN.md`](docs/DESIGN.md) |
-| Why thread-per-client rather than a thread pool? | [`docs/DESIGN.md`](docs/DESIGN.md), quantified by [Evidence 1](#1-concurrency-model--thread-per-client-vs-thread-pool) |
+| Why thread-per-client rather than a thread pool? | [Evidence 1](#1-concurrency-model--thread-per-client-vs-thread-pool) — measured, and not for the reason [`docs/DESIGN.md`](docs/DESIGN.md) originally gave: a pool cannot help when the task holds its thread for the connection's lifetime |
+| Did any measurement change your mind? | [Where the measurements contradicted the design](#where-the-measurements-contradicted-the-design) — two of the four refuted a prediction, and both predictions are still printed next to the result |
 | Why is the rule engine off the ingest path? | [`docs/DESIGN.md`](docs/DESIGN.md) |
 | Why are persistence and detection one sink rather than two? | [`docs/DESIGN.md`](docs/DESIGN.md) — the event's foreign key is the reading's generated id, so the pair must share a transaction |
 | Why do the three rules use different severity cut-offs? | [Severity](#severity) — 5% out of band is a supply fault; 5% over a rated load is a motor starting |
@@ -1049,7 +1329,8 @@ recorded rationale and, where a tradeoff is quantitative, a measurement behind i
 | Why MySQL rather than flat files? | [`docs/DESIGN.md`](docs/DESIGN.md) |
 | Why a hand-written DFA rather than a regular expression? | [The validating DFA](#the-validating-dfa) — a regex compiles to one anyway; writing it explicitly makes the automaton inspectable and yields the error position for free |
 | How do you know the DFA is correct? | [Verifying the automaton](#verifying-the-automaton) — randomised equivalence against a reference regex |
-| Why `multiprocessing` rather than `threading` in Python? | [Evidence 4](#4-python-parallel-speedup) — the measured speedup, and the GIL |
+| Why `multiprocessing` rather than `threading` in Python? | [Evidence 4](#4-python-parallel-speedup) — the measured speedup and the GIL, with a note on why *this* workload would also have parallelised under threads |
+| How is the threshold editor's change picked up by a server that is already running? | [Dashboard](#dashboard) and [Rule engine detection logic](#rule-engine-detection-logic) — it commits to the table and then sends `RELOAD` up the live feed; the alternative, polling, makes an edit take effect at no particular moment |
 | Why does every DAO use `PreparedStatement`? | [Failure-mode demonstrations](#failure-mode-demonstrations) — the injection demo |
 | Why `SwingWorker` rather than querying directly? | [Failure-mode demonstrations](#failure-mode-demonstrations) — the frozen-UI demo |
 | Why is the `(device_id, reading_ts)` index there? | [Evidence 3](#3-index-effectiveness) — the `EXPLAIN` comparison |

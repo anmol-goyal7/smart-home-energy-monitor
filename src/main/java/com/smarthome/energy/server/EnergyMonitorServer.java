@@ -5,6 +5,7 @@ import com.smarthome.energy.db.DataAccessException;
 import com.smarthome.energy.db.DeviceDao;
 import com.smarthome.energy.db.ThresholdDao;
 import com.smarthome.energy.model.Device;
+import com.smarthome.energy.protocol.MeterMessage;
 import com.smarthome.energy.rules.RuleContext;
 import com.smarthome.energy.rules.RuleEngine;
 
@@ -62,6 +63,7 @@ public final class EnergyMonitorServer implements AutoCloseable {
 
     private final ServerConfig config;
     private final boolean persistenceEnabled;
+    private final AcceptStrategy acceptStrategy;
 
     private final CopyOnWriteArrayList<ClientHandler> handlers = new CopyOnWriteArrayList<>();
     private final AtomicInteger connectionCounter = new AtomicInteger();
@@ -74,13 +76,27 @@ public final class EnergyMonitorServer implements AutoCloseable {
     private Thread statusThread;
 
     /**
+     * Creates a server using the shipped thread-per-client model.
+     *
      * @param config             ports and timings; must not be null
      * @param persistenceEnabled whether readings are written to MySQL
      * @throws NullPointerException if {@code config} is null
      */
     public EnergyMonitorServer(ServerConfig config, boolean persistenceEnabled) {
+        this(config, persistenceEnabled, AcceptStrategy.threadPerClient());
+    }
+
+    /**
+     * @param config             ports and timings; must not be null
+     * @param persistenceEnabled whether readings are written to MySQL
+     * @param acceptStrategy     how an accepted connection is given a thread; must not be null
+     * @throws NullPointerException if {@code config} or {@code acceptStrategy} is null
+     */
+    public EnergyMonitorServer(ServerConfig config, boolean persistenceEnabled,
+                               AcceptStrategy acceptStrategy) {
         this.config = Objects.requireNonNull(config, "config");
         this.persistenceEnabled = persistenceEnabled;
+        this.acceptStrategy = Objects.requireNonNull(acceptStrategy, "acceptStrategy");
     }
 
     /**
@@ -112,11 +128,16 @@ public final class EnergyMonitorServer implements AutoCloseable {
             // persistence and not without it: with no thresholds table there is nothing to
             // decide what "normal" is, and a rule engine that invents its own limits would
             // raise alerts against numbers nobody configured.
-            RuleContext thresholds = new RuleContext(catalogue, new ThresholdDao(connections).findAll());
+            ThresholdDao thresholdDao = new ThresholdDao(connections);
+            RuleContext thresholds = new RuleContext(catalogue, thresholdDao.findAll());
             engine = new RuleEngine(thresholds);
             System.out.println("[server] detection enabled: " + thresholds);
 
             sinks.add(new PersistenceSink(connections, engine, publisher::publishAlert));
+
+            // The dashboard's threshold editor writes to the same table this context was built
+            // from, and the server has no other way of hearing about it.
+            publisher.setCommandHandler(command -> handleCommand(command, catalogue, thresholdDao));
         } else {
             System.out.println("[server] persistence DISABLED (--no-persistence): readings are "
                     + "broadcast to dashboards but not stored, and no thresholds are loaded, so "
@@ -129,6 +150,7 @@ public final class EnergyMonitorServer implements AutoCloseable {
         listener = new ServerSocket(config.getMeterPort());
         running = true;
         System.out.println("[server] meter ingest listening on port " + config.getMeterPort());
+        System.out.println("[server] accept strategy: " + acceptStrategy.name());
         System.out.println("[server] sinks: " + String.join(", ", dispatcher.sinkNames()));
 
         statusThread = new Thread(this::reportStatus, "server-status");
@@ -158,6 +180,7 @@ public final class EnergyMonitorServer implements AutoCloseable {
         for (ClientHandler handler : handlers) {
             handler.shutdown();
         }
+        acceptStrategy.close();
         if (dispatcher != null) {
             dispatcher.close();
             System.out.println("[server] dispatcher drained — " + dispatcher.stats());
@@ -173,6 +196,11 @@ public final class EnergyMonitorServer implements AutoCloseable {
     /** @return the number of meters currently connected. */
     public int getConnectedMeterCount() {
         return handlers.size();
+    }
+
+    /** @return the strategy deciding how accepted connections are given threads. */
+    public AcceptStrategy getAcceptStrategy() {
+        return acceptStrategy;
     }
 
     /** Accepts meter connections until the server is closed, one handler thread each. */
@@ -192,10 +220,43 @@ public final class EnergyMonitorServer implements AutoCloseable {
             ClientHandler handler = new ClientHandler(socket, id, dispatcher, knownDevice, handlers::remove);
             handlers.add(handler);
 
-            // Thread-per-client: the whole concurrency model of the ingest path is this line.
-            Thread thread = new Thread(handler, "conn-" + id);
-            thread.setDaemon(true);
-            thread.start();
+            // The whole concurrency model of the ingest path is this line — which is why it
+            // is a pluggable strategy rather than a `new Thread(...)`, so the two candidate
+            // models can be run against each other (Evidence 1) instead of argued about.
+            if (!acceptStrategy.serve(handler, id)) {
+                handlers.remove(handler);
+                handler.shutdown();
+            }
+        }
+    }
+
+    /**
+     * Carries out a command a subscribed dashboard sent up the live feed.
+     *
+     * <p>{@code RELOAD} re-reads the {@code thresholds} table and swaps the result into the
+     * engine. Building a whole new {@link RuleContext} rather than editing the current one is
+     * the point: the context is replaced wholesale and read through a {@code volatile} field,
+     * so a worker part-way through evaluating a reading sees the old limits or the new ones
+     * and never a mixture of both.</p>
+     *
+     * <p>The device catalogue is the one loaded at start-up. A threshold edit cannot add a
+     * device, and re-reading {@code devices} here would make this command quietly do two
+     * things.</p>
+     */
+    private String handleCommand(String command, List<Device> catalogue, ThresholdDao thresholds) {
+        if (!MeterMessage.RELOAD_COMMAND.equals(command)) {
+            return MeterMessage.ERROR_PREFIX + "unknown command '" + command + "'; this server "
+                    + "understands " + MeterMessage.RELOAD_COMMAND;
+        }
+        if (engine == null) {
+            return MeterMessage.ERROR_PREFIX + "detection is not running, so there are no "
+                    + "thresholds to reload";
+        }
+        try {
+            engine.reload(new RuleContext(catalogue, thresholds.findAll()));
+            return MeterMessage.RELOAD_ACK;
+        } catch (DataAccessException e) {
+            return MeterMessage.ERROR_PREFIX + "could not re-read the thresholds: " + e.getMessage();
         }
     }
 
@@ -233,8 +294,10 @@ public final class EnergyMonitorServer implements AutoCloseable {
             double rate = (stats.getDelivered() - previousDelivered) / (double) STATUS_INTERVAL_SECONDS;
             previousDelivered = stats.getDelivered();
             String alerts = engine == null ? "" : " alerts=" + engine.getRaisedCount();
-            System.out.printf("[server] meters=%d subscribers=%d %s%s rate=%.1f/s%n",
-                    handlers.size(), publisher.getSubscriberCount(), stats, alerts, rate);
+            System.out.printf("[server] meters=%d threads=%d/%d subscribers=%d %s%s rate=%.1f/s%n",
+                    handlers.size(), acceptStrategy.getActiveThreadCount(),
+                    acceptStrategy.getPeakThreadCount(), publisher.getSubscriberCount(),
+                    stats, alerts, rate);
         }
     }
 
@@ -253,11 +316,12 @@ public final class EnergyMonitorServer implements AutoCloseable {
      * Starts the ingest server and blocks until the process is interrupted.
      *
      * @param args {@code --meter-port N}, {@code --dashboard-port N}, {@code --no-persistence},
-     *             {@code --help}
+     *             {@code --accept STRATEGY}, {@code --help}
      */
     public static void main(String[] args) {
         ServerConfig config;
         boolean persistence = true;
+        AcceptStrategy strategy = AcceptStrategy.threadPerClient();
 
         try {
             config = ServerConfig.load();
@@ -266,6 +330,7 @@ public final class EnergyMonitorServer implements AutoCloseable {
                     case "--meter-port" -> config = config.withMeterPort(intArg(args, ++i));
                     case "--dashboard-port" -> config = config.withDashboardPort(intArg(args, ++i));
                     case "--no-persistence" -> persistence = false;
+                    case "--accept" -> strategy = AcceptStrategy.parse(stringArg(args, ++i));
                     case "--help", "-h" -> {
                         printUsage();
                         return;
@@ -281,7 +346,7 @@ public final class EnergyMonitorServer implements AutoCloseable {
         }
 
         System.out.println("[server] starting with " + config);
-        EnergyMonitorServer server = new EnergyMonitorServer(config, persistence);
+        EnergyMonitorServer server = new EnergyMonitorServer(config, persistence, strategy);
 
         // Ctrl-C arrives here, which is what makes the shutdown ordering in close() worth
         // having: the normal way this process ends is a signal, not a return from main.
@@ -298,6 +363,13 @@ public final class EnergyMonitorServer implements AutoCloseable {
                     + "--no-persistence to bring up the live pipeline alone.");
             System.exit(1);
         }
+    }
+
+    private static String stringArg(String[] args, int index) {
+        if (index >= args.length) {
+            throw new IllegalArgumentException("option " + args[index - 1] + " needs a value");
+        }
+        return args[index];
     }
 
     private static int intArg(String[] args, int index) {
@@ -320,6 +392,9 @@ public final class EnergyMonitorServer implements AutoCloseable {
                   --dashboard-port N   port the dashboard subscribes to (default from db.properties)
                   --no-persistence     run the live pipeline without MySQL; readings are broadcast
                                        to dashboards but not stored
+                  --accept STRATEGY    how accepted connections get a thread: thread-per-client
+                                       (default), pool, or pool:N. See Evidence 1 in the README
+                                       before choosing anything but the default.
                   --help               show this message
                 """);
     }

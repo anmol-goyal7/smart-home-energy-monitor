@@ -2,6 +2,7 @@ package com.smarthome.energy.simulator;
 
 import com.smarthome.energy.server.ServerConfig;
 
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -46,6 +47,7 @@ public final class SimulatorLauncher {
         double corruptionProbability = 0.0;
         long seed = System.currentTimeMillis();
         Set<Integer> selectedDevices = new LinkedHashSet<>();
+        Scenario scenario = null;
 
         try {
             config = ServerConfig.load();
@@ -58,12 +60,22 @@ public final class SimulatorLauncher {
                     case "--corrupt" -> corruptionProbability = doubleArg(args, ++i);
                     case "--seed" -> seed = longArg(args, ++i);
                     case "--devices" -> selectedDevices.addAll(parseDeviceIds(stringArg(args, ++i)));
+                    case "--scenario" -> scenario = Scenario.byName(stringArg(args, ++i));
+                    case "--list-scenarios" -> {
+                        printScenarios();
+                        return;
+                    }
                     case "--help", "-h" -> {
                         printUsage();
                         return;
                     }
                     default -> throw new IllegalArgumentException("unknown option: " + args[i]);
                 }
+            }
+            if (scenario != null) {
+                // A replay whose faults competed with random ones would be neither scripted nor
+                // random, and the running order printed below would stop being what happens.
+                config = config.withAnomalyProbability(0.0);
             }
             if (corruptionProbability < 0.0 || corruptionProbability > 1.0) {
                 throw new IllegalArgumentException("--corrupt must be within [0,1], was "
@@ -90,6 +102,14 @@ public final class SimulatorLauncher {
                 + ", corruption p=" + corruptionProbability
                 + ", seed=" + seed);
 
+        // One start instant for the whole fleet: the scenario's offsets are from the moment the
+        // replay began, and six meters each timing from their own start would drift apart by
+        // however long the fleet took to connect.
+        Instant scenarioStart = scenario == null ? null : Instant.now();
+        if (scenario != null) {
+            printRunningOrder(scenario);
+        }
+
         List<MeterSimulator> meters = new ArrayList<>();
         List<Thread> threads = new ArrayList<>();
         for (ApplianceProfile profile : fleet) {
@@ -98,7 +118,8 @@ public final class SimulatorLauncher {
             long meterSeed = seed + profile.getDeviceId();
             WaveformGenerator generator = new WaveformGenerator(config.getAnomalyProbability(), meterSeed);
             MeterSimulator meter = new MeterSimulator(profile, host, config.getMeterPort(),
-                    config.getSimulatorIntervalMillis(), generator, corruptionProbability, meterSeed);
+                    config.getSimulatorIntervalMillis(), generator, corruptionProbability, meterSeed,
+                    scenario, scenarioStart);
             meters.add(meter);
 
             Thread thread = new Thread(meter, "meter-" + profile.getDeviceId());
@@ -123,6 +144,30 @@ public final class SimulatorLauncher {
 
         long sent = meters.stream().mapToLong(MeterSimulator::getSentCount).sum();
         System.out.println("[simulator] all meters stopped; " + sent + " reading(s) sent in total");
+    }
+
+    /** Prints what is about to happen, so an audience knows what to watch for. */
+    private static void printRunningOrder(Scenario scenario) {
+        System.out.println("[simulator] replaying scenario '" + scenario.getName() + "' — "
+                + scenario.getSummary());
+        System.out.println("[simulator] the meters stop after "
+                + scenario.getDuration().getSeconds() + "s. Running order:");
+        for (String line : scenario.describeTimeline()) {
+            System.out.println("[simulator]   " + line);
+        }
+        System.out.println("[simulator] random anomalies are off for the duration.");
+    }
+
+    /** Lists the scenarios {@code --scenario} accepts. */
+    private static void printScenarios() {
+        System.out.println("Available scenarios:");
+        for (Scenario scenario : Scenario.all()) {
+            System.out.println("  " + scenario.getName() + " (" + scenario.getDuration().getSeconds()
+                    + "s) — " + scenario.getSummary());
+            for (String line : scenario.describeTimeline()) {
+                System.out.println("      " + line);
+            }
+        }
     }
 
     /** Returns the requested profiles, or the whole fleet when none were named. */
@@ -197,6 +242,9 @@ public final class SimulatorLauncher {
                                     to exercise the server's DFA rejection path (default 0)
                   --devices 1,2,3   run only these device ids (default: the whole seeded fleet)
                   --seed N          seed the generators so the run can be replayed exactly
+                  --scenario NAME   replay a scripted fault timeline instead of relying on
+                                    random anomalies, then stop; turns --anomaly off
+                  --list-scenarios  print the available scenarios and their running orders
                   --help            show this message
                 """);
     }

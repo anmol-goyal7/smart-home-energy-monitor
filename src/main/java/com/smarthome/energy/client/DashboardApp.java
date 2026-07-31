@@ -79,23 +79,31 @@ public final class DashboardApp {
         }
 
         HistoryQueryService history = useDatabase ? openDatabase() : null;
+        // The two services share nothing but their settings, so one can exist without the
+        // other; in practice they fail or succeed together, since both come from the same file.
+        ThresholdService thresholds = history == null ? null : openThresholds();
         String feedHost = host;
         int feedPort = config.getDashboardPort();
 
-        SwingUtilities.invokeLater(() -> start(feedHost, feedPort, history));
+        SwingUtilities.invokeLater(() -> start(feedHost, feedPort, history, thresholds));
     }
 
     /** Builds the MVC triad and starts the feed. Runs on the event dispatch thread. */
-    private static void start(String host, int port, HistoryQueryService history) {
+    private static void start(String host, int port, HistoryQueryService history,
+                              ThresholdService thresholds) {
         DashboardView.applyTheme();
 
         DashboardModel model = new DashboardModel();
         DashboardController controller = history == null
                 ? new DashboardController(model)
-                : new DashboardController(model, history);
+                : new DashboardController(model, history, thresholds);
 
         DashboardView view = new DashboardView(model, controller);
         LiveFeedClient feed = new LiveFeedClient(host, port, controller);
+
+        // The feed needs the controller as its listener and the controller needs the feed to
+        // send RELOAD up, so one of the two has to be wired in after construction.
+        controller.setFeed(feed);
 
         view.getFrame().addWindowListener(new WindowAdapter() {
             @Override
@@ -106,12 +114,14 @@ public final class DashboardApp {
 
         view.show();
         model.setStatus(history == null
-                ? "live feed only (--no-db): history and alerts are unavailable"
+                ? "live feed only (--no-db): history, alerts, and thresholds are unavailable"
                 : "reading history from " + history.getUrl());
 
-        // The catalogue and the alert log are one-off reads; the tiles fill in from the feed.
+        // The catalogue, the alert log, and the thresholds are one-off reads; the tiles fill
+        // in from the feed.
         controller.loadCatalogue();
         controller.refreshEvents();
+        controller.refreshThresholds();
         feed.start();
     }
 
@@ -121,8 +131,18 @@ public final class DashboardApp {
             return HistoryQueryService.fromDefaultConfig();
         } catch (DataAccessException e) {
             System.err.println("[dashboard] no database (" + e.getMessage() + ")");
-            System.err.println("[dashboard] opening on the live feed alone; history and alerts "
-                    + "will be empty.");
+            System.err.println("[dashboard] opening on the live feed alone; history, alerts, and "
+                    + "the threshold editor will be empty.");
+            return null;
+        }
+    }
+
+    /** Opens the threshold editor's write path, leaving the editor read-only if it fails. */
+    private static ThresholdService openThresholds() {
+        try {
+            return ThresholdService.fromDefaultConfig();
+        } catch (DataAccessException e) {
+            System.err.println("[dashboard] thresholds are not editable (" + e.getMessage() + ")");
             return null;
         }
     }

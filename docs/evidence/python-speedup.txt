@@ -1,0 +1,21 @@
+
+Smart Home Energy Monitor — analytics parallel benchmark
+  database   : energy_app@localhost:3306/smart_home_energy
+  devices    : 6
+  work units : 6 per-device analyses (6 device(s) x 1)
+  window     : all history
+
+  warming up …
+  serial                        1.47 s
+  multiprocessing.Pool(2 )      1.08 s
+  multiprocessing.Pool(4 )      0.79 s
+  multiprocessing.Pool(8 )      0.69 s
+  results agree with the serial baseline (6 summaries)
+
+| Mode | Workers | Wall clock (s) | Speedup |
+| ---- | ------- | -------------- | ------- |
+| Serial | 1 | 1.47 | 1.00x |
+| multiprocessing.Pool | 2 | 1.08 | 1.36x |
+| multiprocessing.Pool | 4 | 0.79 | 1.85x |
+| multiprocessing.Pool | 8 | 0.69 | 2.12x |
+benchmark: wrote 4 row(s) to /home/anmol/repos/smart-home-energy-monitor/bench-results/python-speedup.csv
