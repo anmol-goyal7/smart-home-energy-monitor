@@ -8,7 +8,7 @@ and time-of-use cost.
 
 This repository is the course project for **Advanced Programming Practice (APP)**. The
 system is deliberately built to exercise, in one coherent application, all five
-programming paradigms surveyed across the five units of the syllabus.
+programming paradigms surveyed across the five units of the syllabus .
 
 > **Project status.** Phases 1 and 2 are implemented: the database layer, and the live
 > pipeline end to end — meter simulators streaming over TCP, the validating DFA, the
